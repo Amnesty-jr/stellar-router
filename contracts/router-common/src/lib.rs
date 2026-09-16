@@ -558,9 +558,7 @@ mod tests {
         let id = env.register_contract(None, AdminTestContract);
         let result: Result<(), AdminTestError> = env.as_contract(&id, || {
             let admin = Address::generate(&env);
-            env.storage()
-                .instance()
-                .set(&CommonDataKey::Admin, &admin);
+            env.storage().instance().set(&CommonDataKey::Admin, &admin);
 
             require_admin!(
                 &env,
@@ -581,9 +579,7 @@ mod tests {
         let result: Result<(), AdminTestError> = env.as_contract(&id, || {
             let admin = Address::generate(&env);
             let attacker = Address::generate(&env);
-            env.storage()
-                .instance()
-                .set(&CommonDataKey::Admin, &admin);
+            env.storage().instance().set(&CommonDataKey::Admin, &admin);
 
             require_admin!(
                 &env,
@@ -626,9 +622,7 @@ mod tests {
         let id = env.register_contract(None, AdminTestContract);
         let result: Result<(), AdminTestError> = env.as_contract(&id, || {
             let admin = Address::generate(&env);
-            env.storage()
-                .instance()
-                .set(&CommonDataKey::Admin, &admin);
+            env.storage().instance().set(&CommonDataKey::Admin, &admin);
 
             require_admin_simple!(&env, &admin, &CommonDataKey::Admin, AdminTestError)
         });
@@ -643,9 +637,7 @@ mod tests {
         let result: Result<(), AdminTestError> = env.as_contract(&id, || {
             let admin = Address::generate(&env);
             let attacker = Address::generate(&env);
-            env.storage()
-                .instance()
-                .set(&CommonDataKey::Admin, &admin);
+            env.storage().instance().set(&CommonDataKey::Admin, &admin);
 
             require_admin_simple!(&env, &attacker, &CommonDataKey::Admin, AdminTestError)
         });
@@ -952,7 +944,9 @@ pub trait StorageHelper {
 #[cfg(test)]
 mod storage_helper_tests {
     use super::*;
-    use soroban_sdk::{contract, contracterror, testutils::Address as _};
+    use soroban_sdk::{
+        contract, contracterror, testutils::storage::Instance, testutils::Address as _,
+    };
 
     #[contract]
     struct TestContract;
@@ -1049,7 +1043,7 @@ mod storage_helper_tests {
         let id = env.register_contract(None, TestContract);
         env.as_contract(&id, || {
             set_admin(&env, &CommonDataKey::Admin, &Address::generate(&env));
-            let ttl_before = env.storage().instance().get_ttl();
+            let _ttl_before = env.storage().instance().get_ttl();
             extend_instance_ttl(&env, 100, 1000);
             let ttl_after = env.storage().instance().get_ttl();
             assert!(ttl_after >= 1000, "TTL should be extended to at least 1000");

@@ -63,22 +63,6 @@ impl RateLimiter {
         self.config.max_requests
     }
 
-    pub fn check(&self, key: &str) -> bool {
-        let now = Instant::now();
-        let mut entry = self.buckets.entry(key.to_string()).or_insert(BucketEntry {
-            count: 0,
-            window_start: now,
-        });
-
-        if now.duration_since(entry.window_start) >= self.config.window {
-            entry.count = 0;
-            entry.window_start = now;
-        }
-
-        entry.count += 1;
-        entry.count <= self.config.max_requests
-    }
-
     pub fn check_and_remaining(&self, key: &str) -> (bool, u32) {
         let now = Instant::now();
         let mut entry = self.buckets.entry(key.to_string()).or_insert(BucketEntry {
@@ -93,19 +77,10 @@ impl RateLimiter {
 
         entry.count += 1;
         let allowed = entry.count <= self.config.max_requests;
-        (allowed, self.config.max_requests.saturating_sub(entry.count))
-    }
-
-    pub fn remaining(&self, key: &str) -> u32 {
-        if let Some(entry) = self.buckets.get(key) {
-            let now = Instant::now();
-            if now.duration_since(entry.window_start) >= self.config.window {
-                return self.config.max_requests;
-            }
-            let count = entry.count;
-            return self.config.max_requests.saturating_sub(count);
-        }
-        self.config.max_requests
+        (
+            allowed,
+            self.config.max_requests.saturating_sub(entry.count),
+        )
     }
 
     pub fn retry_after_secs(&self, key: &str) -> u64 {
@@ -206,24 +181,24 @@ mod tests {
     #[test]
     fn allows_requests_within_limit() {
         let rl = limiter(3, 60);
-        assert!(rl.check("127.0.0.1"));
-        assert!(rl.check("127.0.0.1"));
-        assert!(rl.check("127.0.0.1"));
+        assert!(rl.check_and_remaining("127.0.0.1").0);
+        assert!(rl.check_and_remaining("127.0.0.1").0);
+        assert!(rl.check_and_remaining("127.0.0.1").0);
     }
 
     #[test]
     fn rejects_request_over_limit() {
         let rl = limiter(2, 60);
-        rl.check("10.0.0.1");
-        rl.check("10.0.0.1");
-        assert!(!rl.check("10.0.0.1"));
+        rl.check_and_remaining("10.0.0.1");
+        rl.check_and_remaining("10.0.0.1");
+        assert!(!rl.check_and_remaining("10.0.0.1").0);
     }
 
     #[test]
     fn different_keys_are_independent() {
         let rl = limiter(1, 60);
-        assert!(rl.check("192.168.1.1"));
-        assert!(rl.check("192.168.1.2"));
-        assert!(!rl.check("192.168.1.1"));
+        assert!(rl.check_and_remaining("192.168.1.1").0);
+        assert!(rl.check_and_remaining("192.168.1.2").0);
+        assert!(!rl.check_and_remaining("192.168.1.1").0);
     }
 }

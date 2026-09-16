@@ -292,10 +292,9 @@ impl RouterMulticall {
             };
 
             if store_results && !simulate {
-                env.storage().instance().set(
-                    &DataKey::BatchResult(batch_id, call_index),
-                    &call_result,
-                );
+                env.storage()
+                    .instance()
+                    .set(&DataKey::BatchResult(batch_id, call_index), &call_result);
             }
 
             if success {
@@ -317,7 +316,14 @@ impl RouterMulticall {
 
             env.events().publish(
                 (Symbol::new(&env, router_common::EVENT_CALL_RESULT),),
-                (&caller, &call.target, &call.function, success, call_index, simulate),
+                (
+                    &caller,
+                    &call.target,
+                    &call.function,
+                    success,
+                    call_index,
+                    simulate,
+                ),
             );
 
             if !success {
@@ -610,7 +616,7 @@ mod tests {
     use super::*;
     use soroban_sdk::{
         testutils::{Address as _, Events},
-        Env, FromVal, IntoVal, String, Symbol, Vec,
+        Env, FromVal, IntoVal, Symbol, Vec,
     };
 
     fn setup() -> (Env, Address, RouterMulticallClient<'static>) {
@@ -630,7 +636,8 @@ mod tests {
     }
 
     fn budget_failure_count(env: &Env, result: &router_common::BatchCallResult) -> u32 {
-        let budget_msg = soroban_sdk::String::from_str(env, router_common::FAILURE_REASON_BUDGET_EXCEEDED);
+        let budget_msg =
+            soroban_sdk::String::from_str(env, router_common::FAILURE_REASON_BUDGET_EXCEEDED);
         let mut count = 0u32;
         for i in 0..result.failures.len() {
             let failure = result.failures.get(i).unwrap();
@@ -935,7 +942,7 @@ mod tests {
 
     #[test]
     fn test_admin_getter() {
-        let (env, admin, client) = setup();
+        let (_env, admin, client) = setup();
         let retrieved_admin = client.admin();
         assert_eq!(retrieved_admin, admin);
     }
@@ -950,7 +957,10 @@ mod tests {
         let events = env.events().all();
         let last = events.last().unwrap();
         let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
-        assert_eq!(topic, Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED));
+        assert_eq!(
+            topic,
+            Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED)
+        );
         let (event_old, event_new): (Address, Address) = last.2.into_val(&env);
         assert_eq!(event_old, admin);
         assert_eq!(event_new, new_admin);
@@ -1028,7 +1038,7 @@ mod tests {
 
         // Attempt to retrieve — should return None
         let result = client.get_batch_result(&0u64, &0u32);
-        assert_eq!(result.is_none(), true);
+        assert!(result.is_none());
     }
 
     #[test]
@@ -1051,7 +1061,7 @@ mod tests {
 
         // Try to get an index that doesn't exist
         let result = client.get_batch_result(&0u64, &5u32);
-        assert_eq!(result.is_none(), true);
+        assert!(result.is_none());
     }
 
     #[test]
@@ -1135,7 +1145,7 @@ mod tests {
 
     #[test]
     fn test_get_batch_results_nonexistent_batch() {
-        let (env, _admin, client) = setup();
+        let (_env, _admin, client) = setup();
 
         // Try to get results for a batch that was never executed
         let results = client.get_batch_results(&99u64);
@@ -1424,7 +1434,7 @@ mod tests {
     // ── Issue #587: mixed required/optional failure scenarios ─────────────────
 
     /// 1. First call optional + fails, second required + succeeds
-    /// Batch should succeed with partial results.
+    ///    Batch should succeed with partial results.
     #[test]
     fn test_first_optional_fails_second_required_succeeds() {
         let (env, _admin, client) = setup();

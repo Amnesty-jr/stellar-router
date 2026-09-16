@@ -40,14 +40,15 @@ pub fn check_and_increment(
     effective_window: u64,
 ) -> RateLimitCheck {
     let now = env.ledger().timestamp();
-    let state: RateLimitState = route_call_state
-        .rate_limits
-        .get(caller.clone())
-        .unwrap_or(RateLimitState {
-            calls_in_window: 0,
-            window_start: now,
-            total_violations: 0,
-        });
+    let state: RateLimitState =
+        route_call_state
+            .rate_limits
+            .get(caller.clone())
+            .unwrap_or(RateLimitState {
+                calls_in_window: 0,
+                window_start: now,
+                total_violations: 0,
+            });
 
     let window_elapsed = now >= state.window_start + effective_window;
     let calls = if window_elapsed {
@@ -55,7 +56,11 @@ pub fn check_and_increment(
     } else {
         state.calls_in_window
     };
-    let window_start = if window_elapsed { now } else { state.window_start };
+    let window_start = if window_elapsed {
+        now
+    } else {
+        state.window_start
+    };
 
     if calls >= effective_limit {
         RateLimitCheck {

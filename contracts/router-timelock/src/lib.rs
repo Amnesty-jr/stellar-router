@@ -79,13 +79,6 @@ pub enum OperationStatus {
     Blocked,
 }
 
-/// (#1205) Instance-storage TTL management, matching the router-core /
-/// router-execution pattern: without periodic extension the contract's
-/// instance entries (Admin, MinDelay, every queued Op and Deps list) are
-/// archived purely from inactivity, bricking the timelock.
-const INSTANCE_TTL_THRESHOLD: u32 = 17280 * 30;
-const INSTANCE_TTL_EXTEND_TO: u32 = 17280 * 60;
-
 // ── Errors ────────────────────────────────────────────────────────────────────
 
 #[contracterror]
@@ -157,9 +150,12 @@ impl RouterTimelock {
         admin: Address,
         min_delay: u64,
         max_pending_ops: u32,
-        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
     ) -> Result<(), TimelockError> {
-        router_common::extend_instance_ttl(&env, Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+        router_common::extend_instance_ttl(
+            &env,
+            Self::INSTANCE_TTL_THRESHOLD,
+            Self::INSTANCE_TTL_EXTEND_TO,
+        );
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(TimelockError::AlreadyInitialized);
         }
@@ -189,10 +185,13 @@ impl RouterTimelock {
         delay: u64,
         grace_period_seconds: u64,
         deps: Vec<Bytes>,
-        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
     ) -> Result<Bytes, TimelockError> {
         proposer.require_auth();
-        router_common::extend_instance_ttl(&env, Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+        router_common::extend_instance_ttl(
+            &env,
+            Self::INSTANCE_TTL_THRESHOLD,
+            Self::INSTANCE_TTL_EXTEND_TO,
+        );
         router_common::require_admin_simple!(&env, &proposer, &DataKey::Admin, TimelockError)?;
 
         let min_delay: u64 = env
@@ -294,9 +293,12 @@ impl RouterTimelock {
 
     /// Cancel a queued operation before it is executed.
     pub fn cancel(env: Env, caller: Address, op_id: Bytes) -> Result<(), TimelockError> {
-        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         caller.require_auth();
-        router_common::extend_instance_ttl(&env, Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+        router_common::extend_instance_ttl(
+            &env,
+            Self::INSTANCE_TTL_THRESHOLD,
+            Self::INSTANCE_TTL_EXTEND_TO,
+        );
         router_common::require_admin_simple!(&env, &caller, &DataKey::Admin, TimelockError)?;
 
         let mut op: Op = env
@@ -327,9 +329,12 @@ impl RouterTimelock {
     /// Returns `TimelockError::NotReady` if called before `eta`.
     /// Returns `TimelockError::Expired` if called after `eta + grace_period_seconds`.
     pub fn execute(env: Env, caller: Address, op_id: Bytes) -> Result<(), TimelockError> {
-        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         caller.require_auth();
-        router_common::extend_instance_ttl(&env, Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+        router_common::extend_instance_ttl(
+            &env,
+            Self::INSTANCE_TTL_THRESHOLD,
+            Self::INSTANCE_TTL_EXTEND_TO,
+        );
         router_common::require_admin_simple!(&env, &caller, &DataKey::Admin, TimelockError)?;
 
         let mut op: Op = env
@@ -388,10 +393,13 @@ impl RouterTimelock {
         caller: Address,
         op_id: Bytes,
         new_description: String,
-        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
     ) -> Result<(), TimelockError> {
         caller.require_auth();
-        router_common::extend_instance_ttl(&env, Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+        router_common::extend_instance_ttl(
+            &env,
+            Self::INSTANCE_TTL_THRESHOLD,
+            Self::INSTANCE_TTL_EXTEND_TO,
+        );
         router_common::require_admin_simple!(&env, &caller, &DataKey::Admin, TimelockError)?;
 
         let mut op: Op = env
@@ -435,9 +443,12 @@ impl RouterTimelock {
     /// # Returns
     /// The number of operations removed.
     pub fn cleanup_expired(env: Env, caller: Address, limit: u32) -> Result<u32, TimelockError> {
-        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         caller.require_auth();
-        router_common::extend_instance_ttl(&env, Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+        router_common::extend_instance_ttl(
+            &env,
+            Self::INSTANCE_TTL_THRESHOLD,
+            Self::INSTANCE_TTL_EXTEND_TO,
+        );
 
         let pending: Vec<Bytes> = env
             .storage()
@@ -465,11 +476,13 @@ impl RouterTimelock {
                 let is_expired = op
                     .eta
                     .checked_add(op.grace_period_seconds)
-                    .map_or(true, |expiry| now > expiry);
+                    .is_none_or(|expiry| now > expiry);
                 if is_expired || op.executed || op.cancelled {
                     // It is expired or finalized! Remove the underlying storage entries.
                     env.storage().instance().remove(&DataKey::Op(op_id.clone()));
-                    env.storage().instance().remove(&DataKey::Deps(op_id.clone()));
+                    env.storage()
+                        .instance()
+                        .remove(&DataKey::Deps(op_id.clone()));
                     cleaned_count += 1;
                 } else {
                     new_pending.push_back(op_id);
@@ -495,8 +508,11 @@ impl RouterTimelock {
 
     /// Get an operation by id.
     pub fn get_op(env: Env, op_id: Bytes) -> Option<Op> {
-        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
-        router_common::extend_instance_ttl(&env, Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+        router_common::extend_instance_ttl(
+            &env,
+            Self::INSTANCE_TTL_THRESHOLD,
+            Self::INSTANCE_TTL_EXTEND_TO,
+        );
         env.storage().instance().get(&DataKey::Op(op_id))
     }
 
@@ -505,8 +521,11 @@ impl RouterTimelock {
     /// Returns an empty `Vec` when no dependencies were recorded (i.e. the
     /// operation was queued without deps, or the `op_id` does not exist).
     pub fn get_dependencies(env: Env, op_id: Bytes) -> Vec<Bytes> {
-        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
-        router_common::extend_instance_ttl(&env, Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+        router_common::extend_instance_ttl(
+            &env,
+            Self::INSTANCE_TTL_THRESHOLD,
+            Self::INSTANCE_TTL_EXTEND_TO,
+        );
         env.storage()
             .instance()
             .get(&DataKey::Deps(op_id))
@@ -524,29 +543,27 @@ impl RouterTimelock {
     ///
     /// Returns `None` if no operation with `op_id` exists.
     pub fn get_operation_status(env: Env, op_id: Bytes) -> Option<OperationStatus> {
-        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
-        let op: Op = env.storage().instance().get(&DataKey::Op(op_id))?;
-        router_common::extend_instance_ttl(&env, Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+        router_common::extend_instance_ttl(
+            &env,
+            Self::INSTANCE_TTL_THRESHOLD,
+            Self::INSTANCE_TTL_EXTEND_TO,
+        );
         let op: Op = env.storage().instance().get(&DataKey::Op(op_id.clone()))?;
         let now = env.ledger().timestamp();
         let status = if op.cancelled {
             OperationStatus::Cancelled
         } else if op.executed {
             OperationStatus::Executed
-        } else if op.eta.checked_add(op.grace_period_seconds).map_or(false, |expiry| now > expiry) {
+        } else if op
+            .eta
+            .checked_add(op.grace_period_seconds)
+            .is_some_and(|expiry| now > expiry)
+        {
             OperationStatus::Expired
         } else if Self::has_blocked_dependency(&env, &op_id) {
             OperationStatus::Blocked
         } else if now >= op.eta {
-            // (#1206) ETA elapsed is not sufficient for Ready: a cancelled
-            // (or otherwise unexecutable) dependency means the operation can
-            // never run. Report Queued so callers are not told an
-            // unexecutable operation is Ready.
-            if Self::require_dependencies_executed(&env, &op_id).is_err() {
-                OperationStatus::Queued
-            } else {
-                OperationStatus::Ready
-            }
+            OperationStatus::Ready
         } else {
             OperationStatus::Queued
         };
@@ -566,8 +583,11 @@ impl RouterTimelock {
     /// # Returns
     /// A [`Vec<Op>`] of all pending operations.
     pub fn get_pending_operations(env: Env) -> Vec<Op> {
-        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
-        router_common::extend_instance_ttl(&env, Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+        router_common::extend_instance_ttl(
+            &env,
+            Self::INSTANCE_TTL_THRESHOLD,
+            Self::INSTANCE_TTL_EXTEND_TO,
+        );
         let pending: Vec<Bytes> = env
             .storage()
             .instance()
@@ -586,7 +606,7 @@ impl RouterTimelock {
                 let within_grace = op
                     .eta
                     .checked_add(op.grace_period_seconds)
-                    .map_or(false, |expiry| now <= expiry);
+                    .is_some_and(|expiry| now <= expiry);
                 if !op.executed && !op.cancelled && within_grace {
                     result.push_back(op);
                 }
@@ -607,8 +627,11 @@ impl RouterTimelock {
     /// # Returns
     /// The count of operations matching the given status.
     pub fn get_operation_count_by_status(env: Env, status: OperationStatus) -> u32 {
-        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
-        router_common::extend_instance_ttl(&env, Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+        router_common::extend_instance_ttl(
+            &env,
+            Self::INSTANCE_TTL_THRESHOLD,
+            Self::INSTANCE_TTL_EXTEND_TO,
+        );
         let pending: Vec<Bytes> = env
             .storage()
             .instance()
@@ -629,19 +652,18 @@ impl RouterTimelock {
                         let is_expired = op
                             .eta
                             .checked_add(op.grace_period_seconds)
-                            .map_or(true, |expiry| now > expiry);
+                            .is_none_or(|expiry| now > expiry);
                         !op.executed && !op.cancelled && is_expired
                     }
                     OperationStatus::Ready => {
                         let within_grace = op
                             .eta
                             .checked_add(op.grace_period_seconds)
-                            .map_or(false, |expiry| now <= expiry);
-                        // (#1206) Same dependency gate as get_operation_status.
-                        let deps_ready =
-                            Self::require_dependencies_executed(&env, &op_id).is_ok();
-                        !op.executed && !op.cancelled && now >= op.eta && within_grace && deps_ready
-                        !op.executed && !op.cancelled && now >= op.eta && within_grace
+                            .is_some_and(|expiry| now <= expiry);
+                        !op.executed
+                            && !op.cancelled
+                            && now >= op.eta
+                            && within_grace
                             && !Self::has_blocked_dependency(&env, &op_id)
                     }
                     OperationStatus::Queued => !op.executed && !op.cancelled && now < op.eta,
@@ -649,8 +671,10 @@ impl RouterTimelock {
                         let within_grace = op
                             .eta
                             .checked_add(op.grace_period_seconds)
-                            .map_or(false, |expiry| now <= expiry);
-                        !op.executed && !op.cancelled && within_grace
+                            .is_some_and(|expiry| now <= expiry);
+                        !op.executed
+                            && !op.cancelled
+                            && within_grace
                             && Self::has_blocked_dependency(&env, &op_id)
                     }
                 };
@@ -663,12 +687,12 @@ impl RouterTimelock {
     }
 
     /// Get all operations matching a specific status.
-    pub fn get_operations_by_status(
-        env: Env,
-        status: OperationStatus,
-        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
-    ) -> Vec<(Bytes, Op)> {
-        router_common::extend_instance_ttl(&env, Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+    pub fn get_operations_by_status(env: Env, status: OperationStatus) -> Vec<(Bytes, Op)> {
+        router_common::extend_instance_ttl(
+            &env,
+            Self::INSTANCE_TTL_THRESHOLD,
+            Self::INSTANCE_TTL_EXTEND_TO,
+        );
         let pending: Vec<Bytes> = env
             .storage()
             .instance()
@@ -691,19 +715,18 @@ impl RouterTimelock {
                         let is_expired = op
                             .eta
                             .checked_add(op.grace_period_seconds)
-                            .map_or(true, |expiry| now > expiry);
+                            .is_none_or(|expiry| now > expiry);
                         !op.executed && !op.cancelled && is_expired
                     }
                     OperationStatus::Ready => {
                         let within_grace = op
                             .eta
                             .checked_add(op.grace_period_seconds)
-                            .map_or(false, |expiry| now <= expiry);
-                        // (#1206) Same dependency gate as get_operation_status.
-                        let deps_ready =
-                            Self::require_dependencies_executed(&env, &op_id).is_ok();
-                        !op.executed && !op.cancelled && now >= op.eta && within_grace && deps_ready
-                        !op.executed && !op.cancelled && now >= op.eta && within_grace
+                            .is_some_and(|expiry| now <= expiry);
+                        !op.executed
+                            && !op.cancelled
+                            && now >= op.eta
+                            && within_grace
                             && !Self::has_blocked_dependency(&env, &op_id)
                     }
                     OperationStatus::Queued => !op.executed && !op.cancelled && now < op.eta,
@@ -711,8 +734,10 @@ impl RouterTimelock {
                         let within_grace = op
                             .eta
                             .checked_add(op.grace_period_seconds)
-                            .map_or(false, |expiry| now <= expiry);
-                        !op.executed && !op.cancelled && within_grace
+                            .is_some_and(|expiry| now <= expiry);
+                        !op.executed
+                            && !op.cancelled
+                            && within_grace
                             && Self::has_blocked_dependency(&env, &op_id)
                     }
                 };
@@ -728,8 +753,11 @@ impl RouterTimelock {
 
     /// Get the maximum allowed number of pending operations.
     pub fn get_max_pending_ops(env: Env) -> u32 {
-        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
-        router_common::extend_instance_ttl(&env, Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+        router_common::extend_instance_ttl(
+            &env,
+            Self::INSTANCE_TTL_THRESHOLD,
+            Self::INSTANCE_TTL_EXTEND_TO,
+        );
         env.storage()
             .instance()
             .get(&DataKey::MaxPendingOps)
@@ -741,8 +769,11 @@ impl RouterTimelock {
     /// # Errors
     /// Returns `TimelockError::NotInitialized` if the contract has not been initialized.
     pub fn min_delay(env: Env) -> Result<u64, TimelockError> {
-        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
-        router_common::extend_instance_ttl(&env, Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+        router_common::extend_instance_ttl(
+            &env,
+            Self::INSTANCE_TTL_THRESHOLD,
+            Self::INSTANCE_TTL_EXTEND_TO,
+        );
         env.storage()
             .instance()
             .get(&DataKey::MinDelay)
@@ -761,10 +792,13 @@ impl RouterTimelock {
         env: Env,
         caller: Address,
         new_min_delay: u64,
-        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
     ) -> Result<(), TimelockError> {
         caller.require_auth();
-        router_common::extend_instance_ttl(&env, Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+        router_common::extend_instance_ttl(
+            &env,
+            Self::INSTANCE_TTL_THRESHOLD,
+            Self::INSTANCE_TTL_EXTEND_TO,
+        );
         router_common::require_admin_simple!(&env, &caller, &DataKey::Admin, TimelockError)?;
 
         if new_min_delay == 0 {
@@ -801,8 +835,11 @@ impl RouterTimelock {
     /// # Errors
     /// Returns `TimelockError::NotInitialized` if the contract has not been initialized.
     pub fn admin(env: Env) -> Result<Address, TimelockError> {
-        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
-        router_common::extend_instance_ttl(&env, Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+        router_common::extend_instance_ttl(
+            &env,
+            Self::INSTANCE_TTL_THRESHOLD,
+            Self::INSTANCE_TTL_EXTEND_TO,
+        );
         env.storage()
             .instance()
             .get(&DataKey::Admin)
@@ -814,11 +851,14 @@ impl RouterTimelock {
         env: Env,
         current: Address,
         new_admin: Address,
-        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
     ) -> Result<(), TimelockError> {
         current.require_auth();
         router_common::require_admin_simple!(&env, &current, &DataKey::Admin, TimelockError)?;
-        router_common::extend_instance_ttl(&env, Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+        router_common::extend_instance_ttl(
+            &env,
+            Self::INSTANCE_TTL_THRESHOLD,
+            Self::INSTANCE_TTL_EXTEND_TO,
+        );
 
         env.storage().instance().set(&DataKey::Admin, &new_admin);
 
@@ -831,8 +871,6 @@ impl RouterTimelock {
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
-
-
 
     fn require_op_pending(op: &Op) -> Result<(), TimelockError> {
         if op.cancelled {
@@ -1043,29 +1081,50 @@ mod tests {
 
     #[test]
     fn test_queue_rejects_op_id_collision_after_execution() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register_contract(None, RouterTimelock);
-        let client = RouterTimelockClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        client.initialize(&admin, &1, &1000);
-
+        // op_id = sha256(description_xdr + target_xdr + eta_be_bytes), and
+        // queue() always computes eta as `current_timestamp + delay` with
+        // delay required to be > 0 (min_delay). So a *later* queue() call can
+        // never legitimately reproduce an eta that a call at or before the
+        // current timestamp already claimed: executing an op requires the
+        // clock to have reached its eta, but any new delay computed from
+        // that same (or later) clock can only push eta forward, never land
+        // back on it. A collision with an already-*executed* op therefore
+        // cannot arise from two ordinary queue() calls — so this test
+        // arranges the precondition directly (an executed Op already
+        // occupying the id a real queue() call is about to compute) rather
+        // than trying to reach it through normal timestamp/delay mechanics.
+        let (env, admin, client) = setup();
         let target = Address::generate(&env);
         let desc = String::from_str(&env, "upgrade oracle");
         let deps: Vec<Bytes> = Vec::new(&env);
+        let delay: u64 = 3600;
 
-        let op_id = client.queue(&admin, &desc, &target, &1, &GRACE, &deps);
-        env.ledger().with_mut(|l| l.timestamp += 1);
-        client.execute(&admin, &op_id);
-        let op = client.get_op(&op_id).unwrap();
-        assert!(op.executed);
+        let eta = env.ledger().timestamp() + delay;
+        let mut preimage = Bytes::new(&env);
+        preimage.append(&desc.clone().to_xdr(&env));
+        preimage.append(&target.clone().to_xdr(&env));
+        preimage.append(&Bytes::from_array(&env, &eta.to_be_bytes()));
+        let op_id: Bytes = env.crypto().sha256(&preimage).into();
 
-        // Re-queue with identical description/target and the same delay again.
-        // Since the ledger timestamp has not advanced further, this reproduces the
-        // exact same (description, target, eta) triple and thus the same
-        // op_id — this must be rejected, not silently reset the already
-        // executed op back to pending.
-        let result = client.try_queue(&admin, &desc, &target, &1, &GRACE, &deps);
+        env.as_contract(&client.address, || {
+            let op = Op {
+                proposer: admin.clone(),
+                description: desc.clone(),
+                target: target.clone(),
+                eta,
+                grace_period_seconds: GRACE,
+                executed: true,
+                cancelled: false,
+            };
+            env.storage()
+                .instance()
+                .set(&DataKey::Op(op_id.clone()), &op);
+        });
+
+        // A fresh queue() call with the same description/target/delay, made
+        // right now, computes this exact op_id — and must be rejected rather
+        // than silently resetting the already-executed op back to pending.
+        let result = client.try_queue(&admin, &desc, &target, &delay, &GRACE, &deps);
         assert_eq!(result, Err(Ok(TimelockError::AlreadyQueued)));
 
         let op_after = client.get_op(&op_id).unwrap();
@@ -1112,7 +1171,14 @@ mod tests {
         let child_desc = String::from_str(&env, "upgrade adapter");
         let no_deps: Vec<Bytes> = Vec::new(&env);
 
-        let parent_id = client.queue(&admin, &parent_desc, &parent_target, &3600, &GRACE, &no_deps);
+        let parent_id = client.queue(
+            &admin,
+            &parent_desc,
+            &parent_target,
+            &3600,
+            &GRACE,
+            &no_deps,
+        );
 
         let mut deps = Vec::new(&env);
         deps.push_back(parent_id.clone());
@@ -1349,7 +1415,7 @@ mod tests {
 
     #[test]
     fn test_set_min_delay_rejects_zero() {
-        let (env, admin, client) = setup();
+        let (_env, admin, client) = setup();
         let result = client.try_set_min_delay(&admin, &0);
         assert_eq!(result, Err(Ok(TimelockError::DelayTooShort)));
     }
@@ -1674,7 +1740,7 @@ mod tests {
     fn test_set_min_delay_updates_value() {
         let (_env, admin, client) = setup();
         client.set_min_delay(&admin, &7200);
-        assert_eq!(client.min_delay(), Ok(7200));
+        assert_eq!(client.min_delay(), 7200);
     }
 
     #[test]
@@ -2101,7 +2167,7 @@ mod tests {
         let grace: u64 = 3600;
 
         // Queue two ops: one that will expire, one that won't
-        let op1 = client.queue(
+        let _op1 = client.queue(
             &admin,
             &String::from_str(&env, "expires"),
             &target,
@@ -2109,7 +2175,7 @@ mod tests {
             &grace,
             &deps,
         );
-        let op2 = client.queue(
+        let _op2 = client.queue(
             &admin,
             &String::from_str(&env, "stays"),
             &target,
@@ -2142,12 +2208,12 @@ mod tests {
         let admin = Address::generate(&env);
         client.initialize(&admin, &3600, &100);
 
-        let target = Address::generate(&env);
+        let _target = Address::generate(&env);
         let deps: Vec<Bytes> = Vec::new(&env);
         let grace: u64 = 3600;
 
         // Queue 5 ops with unique targets to get unique op_ids
-        for i in 0..5u32 {
+        for _i in 0..5u32 {
             let target_i = Address::generate(&env);
             client.queue(
                 &admin,
@@ -2206,7 +2272,7 @@ mod tests {
             &grace,
             &deps,
         );
-        let op3 = client.queue(
+        let _op3 = client.queue(
             &admin,
             &String::from_str(&env, "op3"),
             &target,
@@ -2326,7 +2392,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn test_queue_circular_dependency_fails() {
         let (env, admin, client) = setup();
         let target = Address::generate(&env);
@@ -2351,10 +2416,13 @@ mod tests {
             Err(Ok(TimelockError::CircularDependency)),
             "queue should reject circular self-dependency"
         );
-        
+
         // Verify the operation was NOT stored
         let stored_op = client.get_op(&predicted_op_id);
-        assert!(stored_op.is_none(), "circular dependency should prevent operation from being stored");
+        assert!(
+            stored_op.is_none(),
+            "circular dependency should prevent operation from being stored"
+        );
     }
 
     #[test]
@@ -2376,7 +2444,7 @@ mod tests {
         // Try to queue second operation that depends on first
         let mut deps = Vec::new(&env);
         deps.push_back(op1_id.clone());
-        
+
         let op2_id = client.queue(
             &admin,
             &String::from_str(&env, "op_2"),
@@ -2389,7 +2457,7 @@ mod tests {
         // Verify both operations are stored
         assert!(client.get_op(&op1_id).is_some(), "op1 should be stored");
         assert!(client.get_op(&op2_id).is_some(), "op2 should be stored");
-        
+
         // Verify dependencies are recorded correctly
         let op2_deps = client.get_dependencies(&op2_id);
         assert_eq!(op2_deps.len(), 1, "op2 should have one dependency");
@@ -2648,7 +2716,11 @@ mod tests {
         env.ledger().with_mut(|l| l.timestamp += 3600 + grace + 1);
 
         let pending = client.get_pending_operations();
-        assert_eq!(pending.len(), 1, "only the long-grace op should remain pending");
+        assert_eq!(
+            pending.len(),
+            1,
+            "only the long-grace op should remain pending"
+        );
     }
 
     /// get_operation_count_by_status must correctly count Expired ops using

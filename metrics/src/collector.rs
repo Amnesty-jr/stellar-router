@@ -156,7 +156,10 @@ impl Collector {
                 }
             }
             Err(e) => {
-                warn!(contract_id, "failed to read router pause state via is_paused: {e:#}");
+                warn!(
+                    contract_id,
+                    "failed to read router pause state via is_paused: {e:#}"
+                );
                 0.0
             }
         };
@@ -563,10 +566,7 @@ mod tests {
         let ok = collector.scrape_all(&mock).await;
         assert!(ok);
 
-        let val = metrics
-            .core_paused
-            .with_label_values(&["CORE_ID"])
-            .get();
+        let val = metrics.core_paused.with_label_values(&["CORE_ID"]).get();
         assert_eq!(val, 1.0);
     }
 
@@ -692,7 +692,10 @@ mod tests {
             .with_events(
                 "QUOTE_ID",
                 "quote_calculated",
-                vec![make_event("quote_calculated"), make_event("quote_calculated")],
+                vec![
+                    make_event("quote_calculated"),
+                    make_event("quote_calculated"),
+                ],
             )
             .with_events(
                 "QUOTE_ID",

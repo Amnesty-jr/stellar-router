@@ -28,6 +28,15 @@ path = "tests/quote_execution_multicall_pipeline.rs"
 [dev-dependencies]
 # Local integration tests require soroban-sdk and contract crates
 soroban-sdk = { version = "21.7.6", features = ["testutils"] }
+
+# soroban-env-host declares `ed25519-dalek = ">=2.0.0"` with no upper bound,
+# so an unconstrained resolve can pick 3.x, which has a different
+# rand_core/CryptoRng trait generation and breaks soroban-env-host's own
+# testutils (with_test_prng). Pin here, and see Cargo.lock (pinned via
+# `cargo update -p ed25519-dalek@3.0.0 --precise 2.2.0`) for the actual
+# resolution — a plain version requirement alone doesn't force
+# soroban-env-host's separate, unconstrained edge to unify with it.
+ed25519-dalek = "=2.2.0"
 router-core = { path = "../contracts/router-core" }
 router-registry = { path = "../contracts/router-registry" }
 router-access = { path = "../contracts/router-access" }

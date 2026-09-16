@@ -410,7 +410,12 @@ impl RouterExecution {
         // be executed twice for a single successful `execute()` call.
         let mut carried_first_result: Option<bool> = None;
         if request.simulate_first {
-            let sim_ok = Self::dry_run_invoke(&env, &request.target, &request.function, request.args.clone());
+            let sim_ok = Self::dry_run_invoke(
+                &env,
+                &request.target,
+                &request.function,
+                request.args.clone(),
+            );
             if !sim_ok {
                 Self::log_error(
                     &env,
@@ -442,7 +447,12 @@ impl RouterExecution {
             let invoke_ok = if let Some(result) = carried_first_result.take() {
                 result
             } else {
-                Self::dry_run_invoke(&env, &request.target, &request.function, request.args.clone())
+                Self::dry_run_invoke(
+                    &env,
+                    &request.target,
+                    &request.function,
+                    request.args.clone(),
+                )
             };
 
             if invoke_ok {
@@ -465,11 +475,8 @@ impl RouterExecution {
                     // Compute the delay the caller should wait before the next
                     // retry: base_ms * multiplier^(attempt-1) / 100^(attempt-1).
                     // Emitting this lets off-chain orchestrators honour the backoff.
-                    let delay_ms = Self::compute_backoff_ms(
-                        backoff_base_ms,
-                        backoff_multiplier,
-                        attempts - 1,
-                    );
+                    let delay_ms =
+                        Self::compute_backoff_ms(backoff_base_ms, backoff_multiplier, attempts - 1);
                     env.events().publish(
                         (Symbol::new(&env, router_common::EVENT_EXECUTION_RETRY),),
                         (&request.target, &request.function, attempts, delay_ms),
@@ -540,8 +547,7 @@ impl RouterExecution {
         // NOTE: `caller_asserted_load_bps` is caller-supplied and unverified —
         // see the doc comment above. `high_load` below reflects only what the
         // caller asserted, not a confirmed network condition.
-        let (surge_multiplier, high_load) = if caller_asserted_load_bps >= HIGH_LOAD_THRESHOLD_BPS
-        {
+        let (surge_multiplier, high_load) = if caller_asserted_load_bps >= HIGH_LOAD_THRESHOLD_BPS {
             (SURGE_MULTIPLIER, true)
         } else {
             (NORMAL_MULTIPLIER, false)
@@ -798,7 +804,7 @@ impl RouterExecution {
             .instance()
             .get(&DataKey::ExecHistory)
             .unwrap_or(Vec::new(&env));
-        Ok(history.len() as u32)
+        Ok(history.len())
     }
 
     /// Get the current admin address.
@@ -888,14 +894,31 @@ impl RouterExecution {
     /// Checked arithmetic eliminates this panic and caps the result at a reasonable
     /// maximum delay (1 hour).
     pub(crate) fn compute_backoff_ms(base_ms: u64, multiplier: u32, attempt_index: u32) -> u64 {
-        // Compute: base_ms * multiplier^attempt_index / 100^attempt_index
-        // Using checked arithmetic to prevent overflow panic.
-        let backoff = multiplier
-            .checked_pow(attempt_index)
-            .and_then(|m| base_ms.checked_mul(m as u64))
-            .map(|b| b / FIXED_POINT_SCALE.pow(attempt_index) as u64)
-            .unwrap_or(MAX_BACKOFF_MS);
-        backoff
+        // Compute base_ms * (multiplier / 100)^attempt_index by scaling down
+        // after each multiplication step, rather than raising multiplier to
+        // attempt_index first: multiplier^attempt_index alone overflows u32
+        // (or even u64) well before the actual (scaled) backoff value does,
+        // which previously caused benign inputs like a 1x multiplier or a
+        // zero base to spuriously cap at MAX_BACKOFF_MS instead of staying
+        // constant/zero. u128 keeps each step's intermediate product exact.
+        // Fast paths that also bound the loop below to a small number of
+        // iterations: a zero base stays zero forever, and a multiplier at or
+        // below FIXED_POINT_SCALE (1x) never grows the delay, so neither can
+        // ever need to iterate up to a (potentially huge) attempt_index.
+        if base_ms == 0 || multiplier <= FIXED_POINT_SCALE {
+            return base_ms.min(MAX_BACKOFF_MS);
+        }
+        let mut backoff: u128 = base_ms as u128;
+        for _ in 0..attempt_index {
+            backoff = match backoff.checked_mul(multiplier as u128) {
+                Some(v) => v / FIXED_POINT_SCALE as u128,
+                None => return MAX_BACKOFF_MS,
+            };
+            if backoff >= MAX_BACKOFF_MS as u128 {
+                return MAX_BACKOFF_MS;
+            }
+        }
+        backoff as u64
     }
 
     fn log_error(
@@ -957,12 +980,7 @@ impl RouterExecution {
             .set(&DataKey::ExecHistory, &history);
     }
 
-    fn dry_run_invoke(
-        env: &Env,
-        target: &Address,
-        function: &Symbol,
-        args: Vec<Val>,
-    ) -> bool {
+    fn dry_run_invoke(env: &Env, target: &Address, function: &Symbol, args: Vec<Val>) -> bool {
         env.try_invoke_contract::<Val, Val>(target, function, args)
             .is_ok()
     }
@@ -1136,7 +1154,10 @@ mod tests {
         client.transfer_admin(&admin, &new_admin);
         let event = env.events().all().last().unwrap().clone();
         let topic: Symbol = event.1.get(0).unwrap().into_val(&env);
-        assert_eq!(topic, Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED));
+        assert_eq!(
+            topic,
+            Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED)
+        );
     }
 
     #[test]
@@ -1300,7 +1321,10 @@ mod tests {
         env.as_contract(&client.address, || {
             for i in 0..5u32 {
                 RouterExecution::append_history(&env, &target, &function, true, 0);
-                assert_eq!(RouterExecution::execution_history_len(env.clone()), Ok(i + 1));
+                assert_eq!(
+                    RouterExecution::execution_history_len(env.clone()),
+                    Ok(i + 1)
+                );
             }
         });
         assert_eq!(client.execution_history_len(), 5);
@@ -1526,8 +1550,12 @@ mod tests {
             assert_eq!(result, Err(ExecutionError::ContractRejected));
         });
 
+        // TotalExecutions counts successful outcomes only (see
+        // test_execute_success_path / test_execute_retry_then_succeeds);
+        // this request never succeeds, so it stays 0 while TotalErrors
+        // records the one exhausted-retries failure.
         let (total_execs, total_errors) = client.stats();
-        assert_eq!(total_execs, 1);
+        assert_eq!(total_execs, 0);
         assert_eq!(total_errors, 1);
 
         let history = client.get_execution_history(&1);
@@ -1590,9 +1618,10 @@ mod tests {
     fn test_backoff_overflow_large_multiplier_large_attempt_caps_at_max() {
         // Scenario: multiplier=200 (2×), attempt_index=10
         // Without checked arithmetic: 200^10 overflows u32, causing panic.
-        // With fix: should cap at MAX_BACKOFF_MS without panic.
+        // With fix: no panic, and the true (scaled) value — 1000 * 2^10 —
+        // is well under MAX_BACKOFF_MS, so it is returned uncapped.
         let delay = RouterExecution::compute_backoff_ms(1000, 200, 10);
-        assert_eq!(delay, 3_600_000); // MAX_BACKOFF_MS
+        assert_eq!(delay, 1_024_000);
     }
 
     #[test]
@@ -1651,11 +1680,10 @@ mod tests {
     fn test_backoff_one_unit_below_cap() {
         // If the result is MAX_BACKOFF_MS - 1, the cap should NOT be applied.
         // We need to find a combination that produces a value < MAX_BACKOFF_MS.
-        // base=100, multiplier=200 (2×), attempt_index=15: 100 * 2^15 / 100^15
-        // 2^15 = 32768, 100^15 is huge, so this will be tiny or zero → no cap.
+        // base=100, multiplier=200 (2×), attempt_index=15: 100 * 2^15 = 3,276,800,
+        // which is under MAX_BACKOFF_MS → no cap.
         let delay = RouterExecution::compute_backoff_ms(100, 200, 15);
-        // This should overflow and cap at MAX_BACKOFF_MS.
-        assert_eq!(delay, 3_600_000);
+        assert_eq!(delay, 3_276_800);
 
         // Try a small case: base=3_599_999, multiplier=100 (1×), attempt_index=0
         let delay = RouterExecution::compute_backoff_ms(3_599_999, 100, 0);
@@ -1673,15 +1701,15 @@ mod tests {
 
     #[test]
     fn test_backoff_vacuousness_check_without_fix_would_overflow() {
-        // This test documents that WITHOUT the checked arithmetic fix,
-        // the calculation WOULD overflow/panic for large attempt_index.
-        // The current implementation uses checked_pow, so this test simply
-        // confirms the fix is in place by asserting the cap is applied.
-        //
-        // If we replaced checked_pow with unchecked pow (200u32.pow(10)),
-        // this would panic in debug mode or wrap in release mode.
+        // This test documents that WITHOUT checked arithmetic, computing
+        // multiplier.pow(attempt_index) directly (200u32.pow(10)) would
+        // overflow/panic for large attempt_index. The current implementation
+        // scales down after each multiplication step instead, so this
+        // confirms the fix is in place by asserting the true (uncapped, since
+        // 1000 * 2^10 is well under MAX_BACKOFF_MS) value is returned without
+        // panicking.
         let delay = RouterExecution::compute_backoff_ms(1000, 200, 10);
-        assert_eq!(delay, 3_600_000);
+        assert_eq!(delay, 1_024_000);
         // Vacuousness check: confirm this is not due to base_ms being MAX_BACKOFF_MS.
         assert_ne!(1000, 3_600_000);
     }
@@ -1727,6 +1755,15 @@ mod tests {
         pub fn ping(_env: Env) {}
     }
 
+    // A Soroban contract call that fails has *all* of its own storage writes
+    // rolled back (confirmed empirically: this holds for instance storage,
+    // persistent storage, and even a successful nested call to a separate
+    // helper contract). So a target contract cannot track "have I already
+    // failed once" via its own contract storage — that write never commits.
+    // A plain Rust static lives outside the simulated ledger entirely and
+    // is unaffected by the host's rollback of a failed invocation.
+    static FLAKY_CALL_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
     #[contract]
     pub struct FlakyTarget;
 
@@ -1734,13 +1771,12 @@ mod tests {
     impl FlakyTarget {
         /// Fails on the first invocation, succeeds on every call after that.
         /// Used to exercise the retry-then-succeed path of `execute()`.
-        pub fn ping(env: Env) {
-            let key = Symbol::new(&env, "calls");
-            let count: u32 = env.storage().instance().get(&key).unwrap_or(0);
-            env.storage().instance().set(&key, &(count + 1));
-            if count == 0 {
-                panic!("flaky: first call fails");
+        pub fn flaky_ping(_env: Env) -> Result<(), ExecutionError> {
+            let prior = FLAKY_CALL_COUNT.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+            if prior == 0 {
+                return Err(ExecutionError::ContractRejected);
             }
+            Ok(())
         }
     }
 
@@ -1799,11 +1835,15 @@ mod tests {
 
     #[test]
     fn test_execute_retry_then_succeeds() {
+        // FLAKY_CALL_COUNT is process-global (see its declaration comment for
+        // why), so it must be reset here rather than relying on FlakyTarget's
+        // own (rolled-back) storage to start at zero.
+        FLAKY_CALL_COUNT.store(0, core::sync::atomic::Ordering::SeqCst);
         // setup() initializes with backoff_base_ms=500, backoff_multiplier=200 (2x).
         let (env, _admin, client) = setup();
         let mock_id = env.register_contract(None, FlakyTarget);
         let caller = Address::generate(&env);
-        let function = Symbol::new(&env, "ping");
+        let function = Symbol::new(&env, "flaky_ping");
 
         let request = ExecutionRequest {
             target: mock_id.clone(),
