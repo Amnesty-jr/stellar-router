@@ -68,8 +68,11 @@ jobs:
               cargo test --manifest-path integration-tests/Cargo.toml --test integration_tests ${{ github.event.inputs.test_filter }} -- --ignored
             fi
           fi
-        env:
-          STELLAR_RPC_URL: https://soroban-testnet.stellar.org
+        # No STELLAR_RPC_URL override: the stellar CLI resolves rpc-url +
+        # network-passphrase together from its "testnet" preset when only
+        # --network is given, but errors if rpc-url is set without a
+        # matching explicit passphrase. TestAccount/DeployedContract only
+        # ever pass --network.
 
       - name: Upload test results
         if: always()

@@ -4,6 +4,23 @@ use std::env;
 use std::process::Command;
 use std::time::Duration;
 
+/// Absolute path to a release WASM artifact, resolved relative to the
+/// workspace root rather than the test process's current working directory.
+///
+/// `integration-tests` is its own standalone Cargo workspace, so
+/// `cargo test --manifest-path integration-tests/Cargo.toml` runs the test
+/// binary with its CWD set to `integration-tests/` (cargo always uses the
+/// invoked manifest's directory, not the caller's own cwd) — while the
+/// contracts are built at the repo root's `target/`. A bare
+/// `"target/wasm32-unknown-unknown/release/..."` literal therefore silently
+/// resolves to `integration-tests/target/...`, which never exists.
+pub fn wasm_path(contract_name: &str) -> String {
+    format!(
+        "{}/../target/wasm32-unknown-unknown/release/{contract_name}.wasm",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
 /// Configuration for Stellar testnet integration tests.
 #[derive(Debug, Clone)]
 pub struct TestnetConfig {
@@ -24,18 +41,35 @@ impl Default for TestnetConfig {
     }
 }
 
-/// Test account with keypair.
+/// Monotonic counter so accounts generated within the same test process
+/// (and even within the same second) never collide on identity name.
+static ACCOUNT_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Test account: a named identity in the local stellar-cli keystore.
+///
+/// `stellar keys generate` writes the keypair to `stellar-cli`'s own config
+/// directory rather than printing it to stdout, and `--source` on
+/// deploy/invoke must be an identity name (or a raw secret key) — a bare
+/// public key cannot sign transactions. So `name` (not `address`) is what
+/// gets passed to `--source`; `address` is only for display/contract-call
+/// arguments that expect a public key.
 #[derive(Debug, Clone)]
 pub struct TestAccount {
+    pub name: String,
     pub address: String,
-    pub secret: String,
 }
 
 impl TestAccount {
-    /// Generate a new test account.
+    /// Generate a new test account (a uniquely-named local identity).
     pub fn generate() -> Result<Self, String> {
+        let name = format!(
+            "it-{}-{}",
+            std::process::id(),
+            ACCOUNT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        );
+
         let output = Command::new("stellar")
-            .args(["keys", "generate", "--no-fund"])
+            .args(["keys", "generate", &name])
             .output()
             .map_err(|e| format!("Failed to generate keypair: {}", e))?;
 
@@ -46,30 +80,29 @@ impl TestAccount {
             ));
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let lines: Vec<&str> = stdout.lines().collect();
+        let address_output = Command::new("stellar")
+            .args(["keys", "address", &name])
+            .output()
+            .map_err(|e| format!("Failed to look up generated address: {}", e))?;
 
-        let address = lines
-            .iter()
-            .find(|l| l.contains("Public key:"))
-            .and_then(|l| l.split(':').nth(1))
-            .map(|s| s.trim().to_string())
-            .ok_or("Failed to parse public key")?;
+        if !address_output.status.success() {
+            return Err(format!(
+                "stellar keys address failed: {}",
+                String::from_utf8_lossy(&address_output.stderr)
+            ));
+        }
 
-        let secret = lines
-            .iter()
-            .find(|l| l.contains("Secret key:"))
-            .and_then(|l| l.split(':').nth(1))
-            .map(|s| s.trim().to_string())
-            .ok_or("Failed to parse secret key")?;
+        let address = String::from_utf8_lossy(&address_output.stdout)
+            .trim()
+            .to_string();
 
-        Ok(Self { address, secret })
+        Ok(Self { name, address })
     }
 
     /// Fund this account using Friendbot.
     pub fn fund(&self, network: &str) -> Result<(), String> {
         let output = Command::new("stellar")
-            .args(["keys", "fund", &self.address, "--network", network])
+            .args(["keys", "fund", &self.name, "--network", network])
             .output()
             .map_err(|e| format!("Failed to fund account: {}", e))?;
 
@@ -111,7 +144,7 @@ impl DeployedContract {
                 "--network",
                 network,
                 "--source",
-                &source_account.address,
+                &source_account.name,
             ])
             .output()
             .map_err(|e| format!("Failed to deploy contract: {}", e))?;
@@ -149,7 +182,7 @@ impl DeployedContract {
             "--network",
             &self.network,
             "--source",
-            &source_account.address,
+            &source_account.name,
             "--",
             method,
         ];
@@ -185,7 +218,7 @@ impl DeployedContract {
             "--network",
             &self.network,
             "--source",
-            &source_account.address,
+            &source_account.name,
             "--",
             method,
         ];
@@ -301,42 +334,42 @@ impl TestSuite {
         let network = &self.config.network;
 
         self.router_registry = Some(DeployedContract::deploy(
-            "target/wasm32-unknown-unknown/release/router_registry.wasm",
+            &wasm_path("router_registry"),
             "router-registry",
             &self.admin,
             network,
         )?);
 
         self.router_access = Some(DeployedContract::deploy(
-            "target/wasm32-unknown-unknown/release/router_access.wasm",
+            &wasm_path("router_access"),
             "router-access",
             &self.admin,
             network,
         )?);
 
         self.router_middleware = Some(DeployedContract::deploy(
-            "target/wasm32-unknown-unknown/release/router_middleware.wasm",
+            &wasm_path("router_middleware"),
             "router-middleware",
             &self.admin,
             network,
         )?);
 
         self.router_timelock = Some(DeployedContract::deploy(
-            "target/wasm32-unknown-unknown/release/router_timelock.wasm",
+            &wasm_path("router_timelock"),
             "router-timelock",
             &self.admin,
             network,
         )?);
 
         self.router_multicall = Some(DeployedContract::deploy(
-            "target/wasm32-unknown-unknown/release/router_multicall.wasm",
+            &wasm_path("router_multicall"),
             "router-multicall",
             &self.admin,
             network,
         )?);
 
         self.router_core = Some(DeployedContract::deploy(
-            "target/wasm32-unknown-unknown/release/router_core.wasm",
+            &wasm_path("router_core"),
             "router-core",
             &self.admin,
             network,

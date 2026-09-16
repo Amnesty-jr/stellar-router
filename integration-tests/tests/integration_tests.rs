@@ -40,7 +40,7 @@ mod integration;
 
 #[cfg(test)]
 mod quick_tests {
-    use integration_tests::{DeployedContract, TestAccount};
+    use integration_tests::{wasm_path, DeployedContract, TestAccount};
 
     #[test]
     #[ignore]
@@ -60,17 +60,17 @@ mod quick_tests {
     #[ignore]
     fn test_wasm_contracts_built() {
         let contracts = vec![
-            "target/wasm32-unknown-unknown/release/router_core.wasm",
-            "target/wasm32-unknown-unknown/release/router_registry.wasm",
-            "target/wasm32-unknown-unknown/release/router_access.wasm",
-            "target/wasm32-unknown-unknown/release/router_middleware.wasm",
-            "target/wasm32-unknown-unknown/release/router_timelock.wasm",
-            "target/wasm32-unknown-unknown/release/router_multicall.wasm",
+            wasm_path("router_core"),
+            wasm_path("router_registry"),
+            wasm_path("router_access"),
+            wasm_path("router_middleware"),
+            wasm_path("router_timelock"),
+            wasm_path("router_multicall"),
         ];
 
         for contract in contracts {
             assert!(
-                std::path::Path::new(contract).exists(),
+                std::path::Path::new(&contract).exists(),
                 "Contract not found: {}. Run: cargo build --target wasm32-unknown-unknown --release",
                 contract
             );
@@ -100,16 +100,16 @@ mod quick_tests {
     #[ignore]
     fn test_router_core_register_and_resolve() {
         let network = "testnet";
-        let wasm = "target/wasm32-unknown-unknown/release/router_core.wasm";
+        let wasm = wasm_path("router_core");
         assert!(
-            std::path::Path::new(wasm).exists(),
+            std::path::Path::new(&wasm).exists(),
             "router_core.wasm not found — run: cargo build --target wasm32-unknown-unknown --release"
         );
 
         let admin = TestAccount::generate().expect("generate admin");
         admin.fund(network).expect("fund admin");
 
-        let core = DeployedContract::deploy(wasm, "router-core", &admin, network)
+        let core = DeployedContract::deploy(&wasm, "router-core", &admin, network)
             .expect("deploy router-core");
 
         core.invoke("initialize", &["--admin", &admin.address], &admin)
@@ -154,16 +154,16 @@ mod quick_tests {
     #[ignore]
     fn test_middleware_rate_limit_exceeded_then_resets() {
         let network = "testnet";
-        let wasm = "target/wasm32-unknown-unknown/release/router_middleware.wasm";
+        let wasm = wasm_path("router_middleware");
         assert!(
-            std::path::Path::new(wasm).exists(),
+            std::path::Path::new(&wasm).exists(),
             "router_middleware.wasm not found — run: cargo build --target wasm32-unknown-unknown --release"
         );
 
         let admin = TestAccount::generate().expect("generate admin");
         admin.fund(network).expect("fund admin");
 
-        let mw = DeployedContract::deploy(wasm, "router-middleware", &admin, network)
+        let mw = DeployedContract::deploy(&wasm, "router-middleware", &admin, network)
             .expect("deploy router-middleware");
 
         mw.invoke("initialize", &["--admin", &admin.address], &admin)
