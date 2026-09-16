@@ -1952,6 +1952,22 @@ mod tests {
     }
 
     #[test]
+    fn test_transfer_role_membership_preserves_permanent_grant() {
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let from = Address::generate(&env);
+        let to = Address::generate(&env);
+        client.grant_role(&admin, &from, &role, &None);
+        assert_eq!(client.get_role_expiry(&role, &from), Some(u64::MAX));
+
+        client.transfer_role_membership(&admin, &role, &from, &to);
+
+        assert!(!client.has_role(&from, &role));
+        assert!(client.has_role(&to, &role));
+        assert_eq!(client.get_role_expiry(&role, &to), Some(u64::MAX));
+    }
+
+    #[test]
     fn test_transfer_role_membership_rejects_inactive_source() {
         let (env, admin, client) = setup();
         let role = String::from_str(&env, "operator");
