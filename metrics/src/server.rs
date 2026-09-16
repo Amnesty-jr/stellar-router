@@ -19,6 +19,7 @@ use axum::{
     routing::get,
     Router,
 };
+use prometheus::proto::MetricType;
 use prometheus::{Encoder, Registry, TextEncoder};
 use std::net::SocketAddr;
 use tracing::{info, info_span, Instrument};
@@ -172,15 +173,9 @@ async fn ready_handler(State(state): State<AppState>) -> impl IntoResponse {
 
     let router_up = metric_families
         .iter()
-        .find(|mf| mf.get_name() == "router_up")
+        .find(|mf| mf.get_name() == "router_up" && mf.get_field_type() == MetricType::GAUGE)
         .and_then(|mf| mf.get_metric().first())
-        .and_then(|m| {
-            if m.has_gauge() {
-                Some(m.get_gauge().get_value())
-            } else {
-                None
-            }
-        })
+        .map(|m| m.get_gauge().get_value())
         .unwrap_or(0.0);
 
     if router_up >= 1.0 {
