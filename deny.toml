@@ -1,11 +1,17 @@
 [advisories]
-# Security vulnerabilities in dependencies are denied by default in this
-# version of cargo-deny; nothing to ignore currently.
+# cargo-deny denies "unmaintained" advisories by default, unlike cargo-audit
+# (which only warns on them) — each of these needs an explicit ignore entry
+# even though cargo-audit doesn't complain about it.
 ignore = [
     # Transitive dependency of soroban-sdk (via wasmi_core / soroban-wasmi),
     # not a direct dependency of this project. No upstream fix is available;
     # revisit when soroban-sdk updates its wasmi dependency.
     { id = "RUSTSEC-2024-0436", reason = "unmaintained transitive dependency via soroban-sdk; no direct alternative available" },
+    # Transitive proc-macro dependencies pulled in by metrics: proc-macro-error
+    # via utoipa-gen (utoipa), proc-macro-error2 via validator_derive
+    # (validator). No direct alternative without dropping those crates.
+    { id = "RUSTSEC-2024-0370", reason = "unmaintained transitive dependency via utoipa-gen; no direct alternative available" },
+    { id = "RUSTSEC-2026-0173", reason = "unmaintained transitive dependency via validator_derive; no direct alternative available" },
 ]
 
 [licenses]
@@ -20,6 +26,10 @@ allow = [
     "ISC",
     "Unicode-DFS-2016",
     "Unicode-3.0",
+    # webpki-roots (Mozilla's bundled CA root certificates, pulled in by
+    # hyper-rustls/reqwest's rustls-tls backend in metrics/api-server) is
+    # licensed under this permissive data license.
+    "CDLA-Permissive-2.0",
 ]
 
 [bans]
