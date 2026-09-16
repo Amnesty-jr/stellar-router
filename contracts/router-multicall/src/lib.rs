@@ -610,7 +610,7 @@ mod tests {
     use super::*;
     use soroban_sdk::{
         testutils::{Address as _, Events},
-        Env, FromVal, IntoVal, String, Symbol, Vec,
+        Env, FromVal, IntoVal, Symbol, Vec,
     };
 
     fn setup() -> (Env, Address, RouterMulticallClient<'static>) {
@@ -935,7 +935,7 @@ mod tests {
 
     #[test]
     fn test_admin_getter() {
-        let (env, admin, client) = setup();
+        let (_env, admin, client) = setup();
         let retrieved_admin = client.admin();
         assert_eq!(retrieved_admin, admin);
     }
@@ -1028,7 +1028,7 @@ mod tests {
 
         // Attempt to retrieve — should return None
         let result = client.get_batch_result(&0u64, &0u32);
-        assert_eq!(result.is_none(), true);
+        assert!(result.is_none());
     }
 
     #[test]
@@ -1051,7 +1051,7 @@ mod tests {
 
         // Try to get an index that doesn't exist
         let result = client.get_batch_result(&0u64, &5u32);
-        assert_eq!(result.is_none(), true);
+        assert!(result.is_none());
     }
 
     #[test]
@@ -1135,7 +1135,7 @@ mod tests {
 
     #[test]
     fn test_get_batch_results_nonexistent_batch() {
-        let (env, _admin, client) = setup();
+        let (_env, _admin, client) = setup();
 
         // Try to get results for a batch that was never executed
         let results = client.get_batch_results(&99u64);
@@ -1424,7 +1424,7 @@ mod tests {
     // ── Issue #587: mixed required/optional failure scenarios ─────────────────
 
     /// 1. First call optional + fails, second required + succeeds
-    /// Batch should succeed with partial results.
+    ///    Batch should succeed with partial results.
     #[test]
     fn test_first_optional_fails_second_required_succeeds() {
         let (env, _admin, client) = setup();

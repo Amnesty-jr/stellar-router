@@ -5987,7 +5987,7 @@ mod tests {
         let result = client.remove_routes_batch(&admin, &names, &true);
 
         // At least one failure was recorded (the missing "ghost" route)
-        assert!(result.failures.len() >= 1);
+        assert!(!result.failures.is_empty());
 
         // oracle and vault must still be present with their aliases intact
         assert_eq!(client.resolve(&oracle), addr);

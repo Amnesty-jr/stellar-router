@@ -952,7 +952,9 @@ pub trait StorageHelper {
 #[cfg(test)]
 mod storage_helper_tests {
     use super::*;
-    use soroban_sdk::{contract, contracterror, testutils::Address as _};
+    use soroban_sdk::{
+        contract, contracterror, testutils::storage::Instance, testutils::Address as _,
+    };
 
     #[contract]
     struct TestContract;
@@ -1049,7 +1051,7 @@ mod storage_helper_tests {
         let id = env.register_contract(None, TestContract);
         env.as_contract(&id, || {
             set_admin(&env, &CommonDataKey::Admin, &Address::generate(&env));
-            let ttl_before = env.storage().instance().get_ttl();
+            let _ttl_before = env.storage().instance().get_ttl();
             extend_instance_ttl(&env, 100, 1000);
             let ttl_after = env.storage().instance().get_ttl();
             assert!(ttl_after >= 1000, "TTL should be extended to at least 1000");

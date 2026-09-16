@@ -1089,7 +1089,7 @@ mod tests {
         let name = String::from_str(&env, "oracle");
         let addr = Address::generate(&env);
         client.register(&admin, &name, &addr, &1);
-        let result = client.try_deprecate(&admin, &name, &99, &None::<String>);
+        let _result = client.try_deprecate(&admin, &name, &99, &None::<String>);
         let result = client.try_deprecate(&admin, &name, &99, &None);
         assert_eq!(result, Err(Ok(RegistryError::VersionNotFound)));
     }
@@ -1640,7 +1640,7 @@ mod tests {
 
     #[test]
     fn test_get_all_names_empty() {
-        let (env, _admin, client) = setup();
+        let (_env, _admin, client) = setup();
         let names = client.get_all_names();
         assert!(names.is_empty());
     }

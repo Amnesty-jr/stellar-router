@@ -12,6 +12,9 @@
 //! - Multiple quote comparison
 //! - Best quote selection based on highest output amount
 
+#[cfg(test)]
+extern crate alloc;
+
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, Address, Env, String, Symbol, Vec,
 };
@@ -301,7 +304,7 @@ impl RouterQuote {
         router_common::require_admin_simple!(&env, &caller, &DataKey::Admin, QuoteError)?;
 
         // Validate tier count to prevent unbounded storage growth
-        if tiers.len() as u32 > MAX_FEE_TIERS_PER_ROUTE {
+        if tiers.len() > MAX_FEE_TIERS_PER_ROUTE {
             return Err(QuoteError::TooManyTiers);
         }
 
@@ -724,6 +727,7 @@ impl RouterQuote {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::format;
     use soroban_sdk::{
         testutils::{Address as _, Events},
         vec, Env, IntoVal, String, Symbol,
@@ -741,14 +745,14 @@ mod tests {
 
     #[test]
     fn test_initialize() {
-        let (env, admin, client) = setup();
+        let (_env, admin, client) = setup();
         assert_eq!(client.admin(), admin);
         assert_eq!(client.get_default_fee(), 100);
     }
 
     #[test]
     fn test_initialize_twice_fails() {
-        let (env, admin, client) = setup();
+        let (_env, admin, client) = setup();
         let result = client.try_initialize(&admin, &100);
         assert_eq!(result, Err(Ok(QuoteError::AlreadyInitialized)));
     }
@@ -846,8 +850,7 @@ mod tests {
         let (env, _admin, client) = setup();
         let route = String::from_str(&env, "uniswap");
         let result = client.get_route_fee_tiers(&route);
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_empty());
+        assert!(result.is_empty());
     }
 
     #[test]
@@ -874,9 +877,7 @@ mod tests {
 
         client.set_route_fee_tiers(&admin, &route, &tiers);
 
-        let result = client.get_route_fee_tiers(&route);
-        assert!(result.is_ok());
-        let retrieved_tiers = result.unwrap();
+        let retrieved_tiers = client.get_route_fee_tiers(&route);
         assert_eq!(retrieved_tiers.len(), 3);
 
         // Verify tiers are sorted by min_amount ascending
@@ -1217,14 +1218,14 @@ mod tests {
 
     #[test]
     fn test_set_default_fee() {
-        let (env, admin, client) = setup();
+        let (_env, admin, client) = setup();
         client.set_default_fee(&admin, &200); // 2%
         assert_eq!(client.get_default_fee(), 200);
     }
 
     #[test]
     fn test_set_default_fee_invalid_fails() {
-        let (env, admin, client) = setup();
+        let (_env, admin, client) = setup();
         let result = client.try_set_default_fee(&admin, &10001);
         assert_eq!(result, Err(Ok(QuoteError::InvalidFeeBps)));
     }
@@ -1293,7 +1294,7 @@ mod tests {
 
     #[test]
     fn test_admin_getter() {
-        let (env, admin, client) = setup();
+        let (_env, admin, client) = setup();
         assert_eq!(client.admin(), admin);
     }
 
@@ -1470,6 +1471,9 @@ mod tests {
     #[test]
     fn test_set_route_fee_rejects_route_beyond_max_tracked_routes() {
         let (env, admin, client) = setup();
+        // See test_set_route_fee_allows_updating_existing_route_at_max_tracked_routes:
+        // MAX_TRACKED_ROUTES sequential calls exceed the default per-test budget.
+        env.budget().reset_unlimited();
 
         for i in 0..MAX_TRACKED_ROUTES {
             let route = String::from_str(&env, &format!("route-{}", i));
@@ -1487,6 +1491,10 @@ mod tests {
     #[test]
     fn test_set_route_fee_allows_updating_existing_route_at_max_tracked_routes() {
         let (env, admin, client) = setup();
+        // MAX_TRACKED_ROUTES (500) sequential calls exceed the default test
+        // budget, which models mainnet resource limits per invocation, not
+        // per test; this loop makes that many separate invocations.
+        env.budget().reset_unlimited();
 
         for i in 0..MAX_TRACKED_ROUTES {
             let route = String::from_str(&env, &format!("route-{}", i));

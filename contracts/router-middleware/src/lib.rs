@@ -1789,13 +1789,13 @@ mod tests {
 
     #[test]
     fn test_is_global_enabled_returns_true_by_default() {
-        let (env, _admin, client) = setup();
+        let (_env, _admin, client) = setup();
         assert!(client.is_global_enabled());
     }
 
     #[test]
     fn test_is_global_enabled_reflects_set_value() {
-        let (env, admin, client) = setup();
+        let (_env, admin, client) = setup();
         assert!(client.is_global_enabled());
 
         client.set_global_enabled(&admin, &false);
