@@ -16,8 +16,10 @@ path = "src/main.rs"
 axum = { version = "0.7.9", features = ["tokio"] }
 tokio = { version = "1.44.2", features = ["full"] }
 
-# Prometheus metrics
-prometheus = { version = "0.13.4", features = ["process"] }
+# Prometheus metrics. protobuf (a default feature) pulls in protobuf 2.x,
+# which has RUSTSEC-2024-0437 (uncontrolled recursion); we only ever use
+# TextEncoder, so disable it rather than pull in the vulnerable dependency.
+prometheus = { version = "0.13.4", default-features = false, features = ["process"] }
 
 # Serialization
 serde = { version = "1.0.219", features = ["derive"] }
