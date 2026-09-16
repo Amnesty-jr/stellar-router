@@ -116,8 +116,8 @@ fn test_core_rejects_unauthorized_even_with_unrelated_role() {
     let unrelated_role = String::from_str(&s.env, "viewer");
 
     // Grant user an unrelated role in access
-    s.access.grant_role(&s.admin, &unrelated_role, &user);
-    assert!(s.access.has_role(&unrelated_role, &user));
+    s.access.grant_role(&s.admin, &user, &unrelated_role, &None);
+    assert!(s.access.has_role(&user, &unrelated_role));
 
     // User should still be rejected by core (core uses its own admin check)
     let result = s.core.try_register_route(&user, &name, &addr, &None);
@@ -139,9 +139,9 @@ fn test_access_blacklist_state_is_independent_of_core() {
     s.core.register_route(&s.admin, &name, &addr, &None);
 
     // Grant role then blacklist user in access
-    s.access.grant_role(&s.admin, &role, &user);
+    s.access.grant_role(&s.admin, &user, &role, &None);
     s.access.blacklist(&s.admin, &user);
-    assert!(!s.access.has_role(&role, &user));
+    assert!(!s.access.has_role(&user, &role));
 
     // Core resolve is unaffected — it doesn't consult access
     assert_eq!(s.core.resolve(&name), addr);
@@ -155,7 +155,7 @@ fn test_access_blacklist_state_is_independent_of_core() {
 #[test]
 fn test_middleware_pre_call_passes_for_enabled_route() {
     let s = setup();
-    let route = String::from_str(&s.env, "oracle/get_price");
+    let route = String::from_str(&s.env, "oracle/get-price");
     let addr = Address::generate(&s.env);
     let caller = Address::generate(&s.env);
 
@@ -169,7 +169,7 @@ fn test_middleware_pre_call_passes_for_enabled_route() {
 #[test]
 fn test_middleware_rate_limit_blocks_after_threshold() {
     let s = setup();
-    let route = String::from_str(&s.env, "oracle/get_price");
+    let route = String::from_str(&s.env, "oracle/get-price");
     let addr = Address::generate(&s.env);
     let caller = Address::generate(&s.env);
 
@@ -186,7 +186,7 @@ fn test_middleware_rate_limit_blocks_after_threshold() {
 #[test]
 fn test_middleware_disabled_route_blocks_pre_call() {
     let s = setup();
-    let route = String::from_str(&s.env, "oracle/get_price");
+    let route = String::from_str(&s.env, "oracle/get-price");
     let addr = Address::generate(&s.env);
     let caller = Address::generate(&s.env);
 

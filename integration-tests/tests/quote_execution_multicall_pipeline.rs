@@ -21,6 +21,7 @@
 extern crate std;
 
 use soroban_sdk::{
+    contract, contractimpl,
     testutils::{Address as _, Ledger},
     Address, Env, String, Symbol, Vec,
 };
@@ -32,14 +33,30 @@ use router_registry::{RouterRegistry, RouterRegistryClient};
 use router_access::{RouterAccess, RouterAccessClient};
 use router_middleware::{RouterMiddleware, RouterMiddlewareClient};
 use router_quote::{
-    RouterQuote, RouterQuoteClient, QuoteRequest, QuoteResponse,
+    RouterQuote, RouterQuoteClient, QuoteRequest,
 };
 use router_execution::{
-    RouterExecution, RouterExecutionClient, ExecutionRequest, ExecutionResult,
+    RouterExecution, RouterExecutionClient, ExecutionRequest,
 };
 use router_multicall::{
     RouterMulticall, RouterMulticallClient, CallDescriptor,
 };
+
+// ── Mock swap target ─────────────────────────────────────────────────────────
+//
+// router-execution and router-multicall both invoke `target` as a real
+// cross-contract call (there is no "always succeeds" placeholder address in
+// Soroban — an unregistered address has no code to invoke and every call
+// against it fails). This trivial contract stands in for a real DEX/swap
+// contract so execute()/execute_batch() calls in this suite have something
+// that actually succeeds to call.
+#[contract]
+pub struct MockSwapTarget;
+
+#[contractimpl]
+impl MockSwapTarget {
+    pub fn swap(_env: Env) {}
+}
 
 // ── Test Suite Setup ──────────────────────────────────────────────────────────
 
@@ -68,7 +85,7 @@ impl<'a> PipelineTestSuite<'a> {
         env.mock_all_auths();
         env.ledger().with_mut(|l| {
             l.timestamp = 1000;
-            l.sequence = 100;
+            l.sequence_number = 100;
         });
 
         let admin = Address::generate(&env);
@@ -141,14 +158,15 @@ impl<'a> PipelineTestSuite<'a> {
     fn advance_time(&self, seconds: u64) {
         self.env.ledger().with_mut(|l| {
             l.timestamp += seconds;
-            l.sequence += 1;
+            l.sequence_number += 1;
         });
     }
 
     /// Build a mock swap CallDescriptor for multicall batch tests.
     fn make_swap_call(&self, required: bool) -> CallDescriptor {
+        let target = self.env.register_contract(None, MockSwapTarget);
         CallDescriptor {
-            target: Address::generate(&self.env),
+            target,
             function: Symbol::new(&self.env, "swap"),
             required,
             instruction_budget: None,
@@ -184,12 +202,11 @@ fn test_pipeline_all_contracts_deployed() {
     // Access: Should be able to check roles without panic
     let test_user = Address::generate(&s.env);
     let test_role = String::from_str(&s.env, "test_role");
-    assert!(!s.access.has_role(&test_role, &test_user), "access should return false for non-existent role");
+    assert!(!s.access.has_role(&test_user, &test_role), "access should return false for non-existent role");
     
     // Quote: Should be able to get default fee
-    let default_fee_result = s.quote.try_get_default_fee();
-    assert!(default_fee_result.is_ok(), "quote should return default fee after initialization");
-    assert_eq!(default_fee_result.unwrap(), 100, "quote should have 100 bps default fee");
+    let default_fee = s.quote.get_default_fee();
+    assert_eq!(default_fee, 100, "quote should have 100 bps default fee");
     
     // Execution: Should be initialized (no direct getter, but we can verify it doesn't panic)
     // Just calling setup confirms it initialized without error
@@ -208,12 +225,13 @@ fn test_pipeline_all_contracts_deployed() {
 #[test]
 fn test_pipeline_route_registration() {
     let s = PipelineTestSuite::setup();
-    let route_name = "swap/usd_to_eur";
+    let route_name = "swap/usd-to-eur";
     s.setup_swap_route(route_name);
 
     let route = String::from_str(&s.env, route_name);
-    let resolved = s.core.resolve(&route);
-    assert!(!resolved.is_empty(), "Route should resolve correctly");
+    // resolve()'s non-try client wrapper panics on RouterError, so simply
+    // returning here already proves the route resolved successfully.
+    let _resolved = s.core.resolve(&route);
 
     println!("\n✓ Route '{}' registered and resolves", route_name);
 }
@@ -222,7 +240,7 @@ fn test_pipeline_route_registration() {
 #[test]
 fn test_pipeline_quote_calculation() {
     let s = PipelineTestSuite::setup();
-    let route_name = "swap/usd_to_eur";
+    let route_name = "swap/usd-to-eur";
     s.setup_swap_route(route_name);
 
     let route = String::from_str(&s.env, route_name);
@@ -262,7 +280,7 @@ fn test_pipeline_quote_calculation() {
 #[test]
 fn test_pipeline_middleware_pre_call() {
     let s = PipelineTestSuite::setup();
-    let route_name = "swap/usd_to_eur";
+    let route_name = "swap/usd-to-eur";
     s.setup_swap_route(route_name);
 
     let route = String::from_str(&s.env, route_name);
@@ -283,7 +301,7 @@ fn test_pipeline_middleware_pre_call() {
 #[test]
 fn test_pipeline_execution_swap() {
     let s = PipelineTestSuite::setup();
-    let route_name = "swap/usd_to_eur";
+    let route_name = "swap/usd-to-eur";
     s.setup_swap_route(route_name);
 
     let route = String::from_str(&s.env, route_name);
@@ -292,7 +310,7 @@ fn test_pipeline_execution_swap() {
     s.middleware.pre_call(&s.user, &route);
 
     // Prepare execution request
-    let mock_target = Address::generate(&s.env);
+    let mock_target = s.env.register_contract(None, MockSwapTarget);
     let exec_request = ExecutionRequest {
         target: mock_target.clone(),
         function: Symbol::new(&s.env, "swap"),
@@ -307,15 +325,15 @@ fn test_pipeline_execution_swap() {
 
     // Verify execution result
     assert_eq!(result.target, mock_target);
-    assert_eq!(result.success, true);
+    assert!(result.success);
     assert_eq!(result.attempts, 1u32);
-    assert_eq!(result.simulated, false);
+    assert!(!result.simulated);
 
     // Log execution via middleware post_call
     s.middleware.post_call(&s.user, &route, &true);
 
     println!("\n✓ Swap executed successfully");
-    println!("  Target: {}", result.target);
+    println!("  Target: {:?}", result.target);
     println!("  Attempts: {}", result.attempts);
 }
 
@@ -323,7 +341,7 @@ fn test_pipeline_execution_swap() {
 #[test]
 fn test_pipeline_rate_limiting() {
     let s = PipelineTestSuite::setup();
-    let route_name = "swap/usd_to_eur";
+    let route_name = "swap/usd-to-eur";
     s.setup_swap_route(route_name);
 
     let route = String::from_str(&s.env, route_name);
@@ -349,10 +367,8 @@ fn test_pipeline_rate_limiting() {
 #[test]
 fn test_pipeline_multicall_batch() {
     let s = PipelineTestSuite::setup();
-    let route_name = "swap/usd_to_eur";
+    let route_name = "swap/usd-to-eur";
     s.setup_swap_route(route_name);
-
-    let route = String::from_str(&s.env, route_name);
 
     // Create a batch of multiple calls
     let mut calls = Vec::new(&s.env);
@@ -389,7 +405,7 @@ fn test_pipeline_multicall_batch() {
 #[test]
 fn test_quote_to_execution_to_multicall_pipeline() {
     let s = PipelineTestSuite::setup();
-    let route_name = "swap/usd_to_eur";
+    let route_name = "swap/usd-to-eur";
     s.setup_swap_route(route_name);
 
     println!("\n=== Full Quote → Execution → Multicall Pipeline Test ===\n");
@@ -422,7 +438,7 @@ fn test_quote_to_execution_to_multicall_pipeline() {
     // ── Phase 3: Execute Single Swap ────────────────────────────────────
 
     println!("\nPhase 3: Executing single swap...");
-    let target = Address::generate(&s.env);
+    let target = s.env.register_contract(None, MockSwapTarget);
     let exec_request = ExecutionRequest {
         target: target.clone(),
         function: Symbol::new(&s.env, "swap"),
@@ -433,7 +449,7 @@ fn test_quote_to_execution_to_multicall_pipeline() {
     };
 
     let exec_result = s.execution.execute(&s.user, &exec_request);
-    assert_eq!(exec_result.success, true);
+    assert!(exec_result.success);
     println!("  ✓ Single swap executed successfully");
 
     // Log result to middleware
@@ -497,7 +513,7 @@ fn test_quote_to_execution_to_multicall_pipeline() {
 #[test]
 fn test_pipeline_circuit_breaker() {
     let s = PipelineTestSuite::setup();
-    let route_name = "swap/usd_to_eur";
+    let route_name = "swap/usd-to-eur";
     s.setup_swap_route(route_name);
 
     let route = String::from_str(&s.env, route_name);
@@ -525,7 +541,7 @@ fn test_pipeline_circuit_breaker() {
 #[test]
 fn test_pipeline_rate_limit_reset() {
     let s = PipelineTestSuite::setup();
-    let route_name = "swap/usd_to_eur";
+    let route_name = "swap/usd-to-eur";
     s.setup_swap_route(route_name);
 
     let route = String::from_str(&s.env, route_name);
@@ -552,8 +568,8 @@ fn test_pipeline_rate_limit_reset() {
 fn test_pipeline_multiple_routes_independent() {
     let s = PipelineTestSuite::setup();
 
-    let route1_name = "swap/usd_to_eur";
-    let route2_name = "swap/eur_to_gbp";
+    let route1_name = "swap/usd-to-eur";
+    let route2_name = "swap/eur-to-gbp";
 
     s.setup_swap_route(route1_name);
     s.setup_swap_route(route2_name);
@@ -579,7 +595,7 @@ fn test_pipeline_multiple_routes_independent() {
 #[test]
 fn test_pipeline_multicall_required_vs_optional() {
     let s = PipelineTestSuite::setup();
-    let route_name = "swap/usd_to_eur";
+    let route_name = "swap/usd-to-eur";
     s.setup_swap_route(route_name);
 
     let mut calls = Vec::new(&s.env);
@@ -611,7 +627,7 @@ fn test_pipeline_authorization_checks() {
     let s = PipelineTestSuite::setup();
     let unauthorized_user = Address::generate(&s.env);
 
-    let route_name = "swap/usd_to_eur";
+    let route_name = "swap/usd-to-eur";
     let route = String::from_str(&s.env, route_name);
     let mock_addr = Address::generate(&s.env);
 

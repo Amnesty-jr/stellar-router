@@ -193,8 +193,9 @@ fn test_access_unauthorized_grant_fails() {
     let attacker = Address::generate(&env);
     let result = client.try_grant_role(
         &attacker,
-        &String::from_str(&env, "operator"),
         &Address::generate(&env),
+        &String::from_str(&env, "operator"),
+        &None,
     );
     assert_eq!(result, Err(Ok(AccessError::Unauthorized)));
 }
@@ -211,8 +212,9 @@ fn test_access_blacklisted_address_cannot_receive_role() {
 
     let result = client.try_grant_role(
         &admin,
-        &String::from_str(&env, "operator"),
         &user,
+        &String::from_str(&env, "operator"),
+        &None,
     );
     assert_eq!(result, Err(Ok(AccessError::Blacklisted)));
 }
@@ -237,9 +239,9 @@ fn test_access_double_grant_fails() {
 
     let role = String::from_str(&env, "operator");
     let user = Address::generate(&env);
-    client.grant_role(&admin, &role, &user);
+    client.grant_role(&admin, &user, &role, &None);
 
-    let result = client.try_grant_role(&admin, &role, &user);
+    let result = client.try_grant_role(&admin, &user, &role, &None);
     assert_eq!(result, Err(Ok(AccessError::AlreadyHasRole)));
 }
 
