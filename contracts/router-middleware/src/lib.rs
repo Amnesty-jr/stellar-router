@@ -413,10 +413,9 @@ impl RouterMiddleware {
             let caller_override: Option<CallerRateLimitConfig> = env
                 .storage()
                 .instance()
-                .get::<DataKey, CallerRateLimitConfig>(&DataKey::CallerRateLimit(
-                    route.clone(),
-                    caller.clone(),
-                ));
+                .get::<DataKey, CallerRateLimitConfig>(
+                &DataKey::CallerRateLimit(route.clone(), caller.clone()),
+            );
 
             if config.max_calls_per_window > 0 || caller_override.is_some() {
                 // Resolve effective limit: per-caller override takes precedence
@@ -707,8 +706,10 @@ impl RouterMiddleware {
         // this only cleared CallLog inline and left CallLogSummary stale).
         call_log::clear(&env, &route);
 
-        env.events()
-            .publish((Symbol::new(&env, router_common::EVENT_CALL_LOG_CLEARED),), route);
+        env.events().publish(
+            (Symbol::new(&env, router_common::EVENT_CALL_LOG_CLEARED),),
+            route,
+        );
         Ok(())
     }
 
@@ -862,7 +863,10 @@ impl RouterMiddleware {
             .instance()
             .set(&DataKey::RateLimitStrategy(route.clone()), &strategy);
         env.events().publish(
-            (Symbol::new(&env, router_common::EVENT_RATE_LIMIT_STRATEGY_SET),),
+            (Symbol::new(
+                &env,
+                router_common::EVENT_RATE_LIMIT_STRATEGY_SET,
+            ),),
             (route, strategy),
         );
         Ok(())
@@ -899,11 +903,7 @@ impl RouterMiddleware {
     /// Calling `reset_guard` clears that flag and restores normal operation.
     ///
     /// Admin only. Emits a `guard_reset` event with the route name.
-    pub fn reset_guard(
-        env: Env,
-        caller: Address,
-        route: String,
-    ) -> Result<(), MiddlewareError> {
+    pub fn reset_guard(env: Env, caller: Address, route: String) -> Result<(), MiddlewareError> {
         caller.require_auth();
         router_common::require_admin_simple!(&env, &caller, &DataKey::Admin, MiddlewareError)?;
 
@@ -911,8 +911,10 @@ impl RouterMiddleware {
             .instance()
             .remove(&DataKey::Executing(route.clone()));
 
-        env.events()
-            .publish((Symbol::new(&env, router_common::EVENT_GUARD_RESET),), route);
+        env.events().publish(
+            (Symbol::new(&env, router_common::EVENT_GUARD_RESET),),
+            route,
+        );
 
         Ok(())
     }
@@ -957,7 +959,10 @@ impl RouterMiddleware {
             },
         );
         env.events().publish(
-            (Symbol::new(&env, router_common::EVENT_CALLER_RATE_LIMIT_SET),),
+            (Symbol::new(
+                &env,
+                router_common::EVENT_CALLER_RATE_LIMIT_SET,
+            ),),
             (route, target_caller, max_calls, window_secs),
         );
         Ok(())
@@ -1000,7 +1005,10 @@ impl RouterMiddleware {
         let key = DataKey::CallerRateLimit(route.clone(), target_caller.clone());
         env.storage().instance().remove(&key);
         env.events().publish(
-            (Symbol::new(&env, router_common::EVENT_CALLER_RATE_LIMIT_REMOVED),),
+            (Symbol::new(
+                &env,
+                router_common::EVENT_CALLER_RATE_LIMIT_REMOVED,
+            ),),
             (route, target_caller),
         );
         Ok(())
@@ -1454,7 +1462,10 @@ mod tests {
         assert_eq!(last_event.0, contract_id);
 
         let topic: Symbol = last_event.1.get(0).unwrap().into_val(&env);
-        assert_eq!(topic, Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED));
+        assert_eq!(
+            topic,
+            Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED)
+        );
 
         let (emitted_old, emitted_new): (Address, Address) = last_event.2.into_val(&env);
         assert_eq!(emitted_old, old_admin);
@@ -2304,7 +2315,10 @@ mod tests {
         let events = env.events().all();
         let last = events.last().unwrap();
         let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
-        assert_eq!(topic, Symbol::new(&env, router_common::EVENT_RATE_LIMIT_STRATEGY_SET));
+        assert_eq!(
+            topic,
+            Symbol::new(&env, router_common::EVENT_RATE_LIMIT_STRATEGY_SET)
+        );
     }
 
     #[test]
@@ -2675,7 +2689,9 @@ mod tests {
         client.configure_route(&admin, &route, &5, &60, &true, &0, &0, &0, &0);
         let caller = Address::generate(&env);
 
-        assert!(client.try_set_caller_rate_limit(&admin, &route, &caller, &0, &0).is_ok());
+        assert!(client
+            .try_set_caller_rate_limit(&admin, &route, &caller, &0, &0)
+            .is_ok());
     }
 
     // ── Reentrancy guard tests ────────────────────────────────────────────────

@@ -292,10 +292,9 @@ impl RouterMulticall {
             };
 
             if store_results && !simulate {
-                env.storage().instance().set(
-                    &DataKey::BatchResult(batch_id, call_index),
-                    &call_result,
-                );
+                env.storage()
+                    .instance()
+                    .set(&DataKey::BatchResult(batch_id, call_index), &call_result);
             }
 
             if success {
@@ -317,7 +316,14 @@ impl RouterMulticall {
 
             env.events().publish(
                 (Symbol::new(&env, router_common::EVENT_CALL_RESULT),),
-                (&caller, &call.target, &call.function, success, call_index, simulate),
+                (
+                    &caller,
+                    &call.target,
+                    &call.function,
+                    success,
+                    call_index,
+                    simulate,
+                ),
             );
 
             if !success {
@@ -630,7 +636,8 @@ mod tests {
     }
 
     fn budget_failure_count(env: &Env, result: &router_common::BatchCallResult) -> u32 {
-        let budget_msg = soroban_sdk::String::from_str(env, router_common::FAILURE_REASON_BUDGET_EXCEEDED);
+        let budget_msg =
+            soroban_sdk::String::from_str(env, router_common::FAILURE_REASON_BUDGET_EXCEEDED);
         let mut count = 0u32;
         for i in 0..result.failures.len() {
             let failure = result.failures.get(i).unwrap();
@@ -950,7 +957,10 @@ mod tests {
         let events = env.events().all();
         let last = events.last().unwrap();
         let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
-        assert_eq!(topic, Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED));
+        assert_eq!(
+            topic,
+            Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED)
+        );
         let (event_old, event_new): (Address, Address) = last.2.into_val(&env);
         assert_eq!(event_old, admin);
         assert_eq!(event_new, new_admin);

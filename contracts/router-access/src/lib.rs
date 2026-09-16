@@ -102,9 +102,10 @@ impl RouterAccess {
         Self::require_super_admin(&env, &caller)?;
         let effective_max_roles = max_roles.unwrap_or(DEFAULT_MAX_ROLES);
         let effective_max_grants = max_grants_per_role.unwrap_or(DEFAULT_MAX_GRANTS_PER_ROLE);
-        env.storage()
-            .instance()
-            .set(&DataKey::RoleLimits, &(effective_max_roles, effective_max_grants));
+        env.storage().instance().set(
+            &DataKey::RoleLimits,
+            &(effective_max_roles, effective_max_grants),
+        );
         env.events().publish(
             (Symbol::new(&env, router_common::EVENT_ROLE_LIMITS_SET),),
             (effective_max_roles, effective_max_grants),
@@ -392,7 +393,11 @@ impl RouterAccess {
     /// Adjusts `RoleMemberCount` for every role in `target`'s `AddressRoles`
     /// list that it directly and actively (non-expired) holds, by +1 (when
     /// `increment` is true, i.e. on unblacklist) or -1 (on blacklist).
-    fn adjust_role_member_counts_for_blacklist_change(env: &Env, target: &Address, increment: bool) {
+    fn adjust_role_member_counts_for_blacklist_change(
+        env: &Env,
+        target: &Address,
+        increment: bool,
+    ) {
         let roles: Vec<String> = env
             .storage()
             .instance()
@@ -904,18 +909,18 @@ impl RouterAccess {
         if Self::is_blacklisted_internal(env, caller) {
             return Err(AccessError::Blacklisted);
         }
-        
+
         // Check if super admin exists first, return NotInitialized if not
         let admin: Address = env
             .storage()
             .instance()
             .get(&DataKey::SuperAdmin)
             .ok_or(AccessError::NotInitialized)?;
-        
+
         if &admin == caller {
             return Ok(());
         }
-        
+
         if let Some(role_admin) = env
             .storage()
             .instance()
@@ -1926,7 +1931,10 @@ mod tests {
         assert!(members.iter().any(|a| a == to));
         assert!(!members.iter().any(|a| a == from));
         assert!(client.get_roles_for_address(&to).iter().any(|r| r == role));
-        assert!(!client.get_roles_for_address(&from).iter().any(|r| r == role));
+        assert!(!client
+            .get_roles_for_address(&from)
+            .iter()
+            .any(|r| r == role));
     }
 
     #[test]
@@ -2033,4 +2041,3 @@ mod tests {
         assert!(!client.has_role(&to, &role));
     }
 }
-

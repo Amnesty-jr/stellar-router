@@ -28,19 +28,13 @@ use soroban_sdk::{
 
 // ── Contract imports ──────────────────────────────────────────────────────────
 
-use router_core::{RouterCore, RouterCoreClient};
-use router_registry::{RouterRegistry, RouterRegistryClient};
 use router_access::{RouterAccess, RouterAccessClient};
+use router_core::{RouterCore, RouterCoreClient};
+use router_execution::{ExecutionRequest, RouterExecution, RouterExecutionClient};
 use router_middleware::{RouterMiddleware, RouterMiddlewareClient};
-use router_quote::{
-    RouterQuote, RouterQuoteClient, QuoteRequest,
-};
-use router_execution::{
-    RouterExecution, RouterExecutionClient, ExecutionRequest,
-};
-use router_multicall::{
-    RouterMulticall, RouterMulticallClient, CallDescriptor,
-};
+use router_multicall::{CallDescriptor, RouterMulticall, RouterMulticallClient};
+use router_quote::{QuoteRequest, RouterQuote, RouterQuoteClient};
+use router_registry::{RouterRegistry, RouterRegistryClient};
 
 // ── Mock swap target ─────────────────────────────────────────────────────────
 //
@@ -142,16 +136,19 @@ impl<'a> PipelineTestSuite<'a> {
         let mock_oracle = Address::generate(&self.env);
 
         // Step 1: Register route in registry
-        self.registry.register(&self.admin, &route, &mock_oracle, &1);
+        self.registry
+            .register(&self.admin, &route, &mock_oracle, &1);
 
         // Step 2: Register route in core
-        self.core.register_route(&self.admin, &route, &mock_oracle, &None);
+        self.core
+            .register_route(&self.admin, &route, &mock_oracle, &None);
 
         // Step 3: Configure route in quote (50 bps = 0.5% fee)
         self.quote.set_route_fee(&self.admin, &route, &50);
 
         // Step 4: Configure middleware with rate limiting (10 calls per 60s window)
-        self.middleware.configure_route(&self.admin, &route, &10, &60, &true, &3, &30, &0, &0);
+        self.middleware
+            .configure_route(&self.admin, &route, &10, &60, &true, &3, &30, &0, &0);
     }
 
     /// Advance time by a given number of seconds.
@@ -181,36 +178,54 @@ impl<'a> PipelineTestSuite<'a> {
 #[test]
 fn test_pipeline_all_contracts_deployed() {
     let s = PipelineTestSuite::setup();
-    
+
     // Verify each contract is initialized by calling a post-initialization method
     // that only succeeds if the contract was properly initialized
-    
+
     // Core: Should track zero routes initially
-    assert_eq!(s.core.total_routed(), 0, "core should have zero routed calls initially");
-    
+    assert_eq!(
+        s.core.total_routed(),
+        0,
+        "core should have zero routed calls initially"
+    );
+
     // Middleware: Should have zero total calls
-    assert_eq!(s.middleware.total_calls(), 0, "middleware should have zero calls initially");
-    
+    assert_eq!(
+        s.middleware.total_calls(),
+        0,
+        "middleware should have zero calls initially"
+    );
+
     // Multicall: Should return the configured max batch size
-    assert_eq!(s.multicall.max_batch_size(), 10, "multicall should have max_batch_size=10");
-    
+    assert_eq!(
+        s.multicall.max_batch_size(),
+        10,
+        "multicall should have max_batch_size=10"
+    );
+
     // Registry: Should be able to check for a non-existent route without panic
     let test_route = String::from_str(&s.env, "nonexistent");
     let result = s.registry.try_get_latest(&test_route);
-    assert!(result.is_err(), "registry should return error for non-existent route");
-    
+    assert!(
+        result.is_err(),
+        "registry should return error for non-existent route"
+    );
+
     // Access: Should be able to check roles without panic
     let test_user = Address::generate(&s.env);
     let test_role = String::from_str(&s.env, "test_role");
-    assert!(!s.access.has_role(&test_user, &test_role), "access should return false for non-existent role");
-    
+    assert!(
+        !s.access.has_role(&test_user, &test_role),
+        "access should return false for non-existent role"
+    );
+
     // Quote: Should be able to get default fee
     let default_fee = s.quote.get_default_fee();
     assert_eq!(default_fee, 100, "quote should have 100 bps default fee");
-    
+
     // Execution: Should be initialized (no direct getter, but we can verify it doesn't panic)
     // Just calling setup confirms it initialized without error
-    
+
     println!("\n✓ All 7 contracts deployed and initialized");
     println!("  - router-core: total_routed = 0");
     println!("  - router-middleware: total_calls = 0");
@@ -381,21 +396,28 @@ fn test_pipeline_multicall_batch() {
 
     // Execute batch
     let batch_result = s.multicall.execute_batch(
-        &s.user,
-        &calls,
-        &false, // not simulating
+        &s.user, &calls, &false, // not simulating
         &true,  // store results
         &false, // don't fail fast
         &None,  // max_total_gas
     );
 
     // Verify batch result summary
-    assert_eq!(batch_result.successes.len() + batch_result.failures.len(), 3);
+    assert_eq!(
+        batch_result.successes.len() + batch_result.failures.len(),
+        3
+    );
     // In this test environment, all calls should succeed (they're mocked)
-    assert!(batch_result.failures.is_empty(), "all mocked calls should succeed");
+    assert!(
+        batch_result.failures.is_empty(),
+        "all mocked calls should succeed"
+    );
 
     println!("\n✓ Multicall batch executed");
-    println!("  Total calls: {}", batch_result.successes.len() + batch_result.failures.len());
+    println!(
+        "  Total calls: {}",
+        batch_result.successes.len() + batch_result.failures.len()
+    );
     println!("  Succeeded: {}", batch_result.successes.len());
     println!("  Failed: {}", batch_result.failures.len());
 }
@@ -473,12 +495,17 @@ fn test_quote_to_execution_to_multicall_pipeline() {
         &None,  // max_total_gas
     );
 
-    assert_eq!(batch_result.successes.len() + batch_result.failures.len(), 3);
+    assert_eq!(
+        batch_result.successes.len() + batch_result.failures.len(),
+        3
+    );
     println!("  ✓ Batched 3 swaps successfully");
-    println!("    Total: {}, Succeeded: {}, Failed: {}",
-             batch_result.successes.len() + batch_result.failures.len(),
-             batch_result.successes.len(),
-             batch_result.failures.len());
+    println!(
+        "    Total: {}, Succeeded: {}, Failed: {}",
+        batch_result.successes.len() + batch_result.failures.len(),
+        batch_result.successes.len(),
+        batch_result.failures.len()
+    );
 
     // ── Phase 5: Verify Rate Limiting After Batch ───────────────────────
 
@@ -491,9 +518,10 @@ fn test_quote_to_execution_to_multicall_pipeline() {
     }
 
     let final_calls = s.middleware.total_calls();
-    println!("  ✓ Total calls tracked: {} → {}",
-             initial_calls,
-             final_calls);
+    println!(
+        "  ✓ Total calls tracked: {} → {}",
+        initial_calls, final_calls
+    );
 
     // ── Phase 6: Verify Router Core Counters ─────────────────────────
 
@@ -521,7 +549,8 @@ fn test_pipeline_circuit_breaker() {
 
     // Configure middleware with low failure threshold (2 failures)
     // This route will be configured with failure_threshold = 2
-    s.middleware.configure_route(&s.admin, &route, &5, &60, &true, &2, &60, &0, &0);
+    s.middleware
+        .configure_route(&s.admin, &route, &5, &60, &true, &2, &60, &0, &0);
 
     // Simulate two failures (calls post_call with success=false)
     s.middleware.post_call(&user, &route, &false);
@@ -601,17 +630,15 @@ fn test_pipeline_multicall_required_vs_optional() {
     let mut calls = Vec::new(&s.env);
 
     // Required call (will succeed since all calls are mocked)
-    let call1 = s.make_swap_call(true);  // Must succeed
-    // Optional calls (can fail)
+    let call1 = s.make_swap_call(true); // Must succeed
+                                        // Optional calls (can fail)
     let call2 = s.make_swap_call(false); // Can fail
 
     calls.push_back(call1);
     calls.push_back(call2);
 
     let result = s.multicall.execute_batch(
-        &s.user,
-        &calls,
-        &false, // not simulating
+        &s.user, &calls, &false, // not simulating
         &true,  // store results
         &false, // don't fail fast
         &None,  // max_total_gas
@@ -632,7 +659,9 @@ fn test_pipeline_authorization_checks() {
     let mock_addr = Address::generate(&s.env);
 
     // Unauthorized user should not be able to register routes in core
-    let result = s.core.try_register_route(&unauthorized_user, &route, &mock_addr, &None);
+    let result = s
+        .core
+        .try_register_route(&unauthorized_user, &route, &mock_addr, &None);
     assert_eq!(result, Err(Ok(router_core::RouterError::Unauthorized)));
 
     println!("\n✓ Authorization checks are enforced");

@@ -77,7 +77,10 @@ impl RateLimiter {
 
         entry.count += 1;
         let allowed = entry.count <= self.config.max_requests;
-        (allowed, self.config.max_requests.saturating_sub(entry.count))
+        (
+            allowed,
+            self.config.max_requests.saturating_sub(entry.count),
+        )
     }
 
     pub fn retry_after_secs(&self, key: &str) -> u64 {

@@ -121,10 +121,14 @@ mod quick_tests {
         core.invoke(
             "register_route",
             &[
-                "--caller", &admin.address,
-                "--name", "oracle",
-                "--address", &target,
-                "--metadata", "null",
+                "--caller",
+                &admin.address,
+                "--name",
+                "oracle",
+                "--address",
+                &target,
+                "--metadata",
+                "null",
             ],
             &admin,
         )
@@ -169,14 +173,22 @@ mod quick_tests {
         mw.invoke(
             "configure_route",
             &[
-                "--caller", &admin.address,
-                "--route", "oracle/get_price",
-                "--max_calls_per_window", "2",
-                "--window_seconds", "60",
-                "--enabled", "true",
-                "--failure_threshold", "0",
-                "--recovery_window_seconds", "0",
-                "--log_retention", "0",
+                "--caller",
+                &admin.address,
+                "--route",
+                "oracle/get_price",
+                "--max_calls_per_window",
+                "2",
+                "--window_seconds",
+                "60",
+                "--enabled",
+                "true",
+                "--failure_threshold",
+                "0",
+                "--recovery_window_seconds",
+                "0",
+                "--log_retention",
+                "0",
             ],
             &admin,
         )
@@ -186,16 +198,28 @@ mod quick_tests {
         caller.fund(network).expect("fund caller");
 
         // Call 1 — should succeed
-        mw.invoke("pre_call", &["--caller", &caller.address, "--route", "oracle/get_price"], &caller)
-            .expect("pre_call 1");
+        mw.invoke(
+            "pre_call",
+            &["--caller", &caller.address, "--route", "oracle/get_price"],
+            &caller,
+        )
+        .expect("pre_call 1");
 
         // Call 2 — should succeed
-        mw.invoke("pre_call", &["--caller", &caller.address, "--route", "oracle/get_price"], &caller)
-            .expect("pre_call 2");
+        mw.invoke(
+            "pre_call",
+            &["--caller", &caller.address, "--route", "oracle/get_price"],
+            &caller,
+        )
+        .expect("pre_call 2");
 
         // Call 3 — must fail with RateLimitExceeded
         let err = mw
-            .try_invoke("pre_call", &["--caller", &caller.address, "--route", "oracle/get_price"], &caller)
+            .try_invoke(
+                "pre_call",
+                &["--caller", &caller.address, "--route", "oracle/get_price"],
+                &caller,
+            )
             .expect_err("pre_call 3 should fail with RateLimitExceeded");
         assert!(
             err.contains("RateLimitExceeded") || err.contains("4"),

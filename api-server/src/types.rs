@@ -72,7 +72,6 @@ pub struct SimulationDetail {
     pub would_succeed: bool,
 }
 
-
 /// Machine-readable error codes for API error responses.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -172,5 +171,3 @@ pub struct SubscribeMessage {
     pub action: String,
     pub tx_id: String,
 }
-
-

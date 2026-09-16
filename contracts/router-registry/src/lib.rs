@@ -817,8 +817,6 @@ impl RouterRegistry {
         *fn_sym == Symbol::new(env, "health") || *fn_sym == Symbol::new(env, "ping")
     }
 
-
-
     /// Iterates `versions` in descending order and returns the first
     /// [`ContractEntry`] for `name` that is not deprecated.
     ///
@@ -865,7 +863,9 @@ impl RouterRegistry {
     /// `soroban_sdk::String` doesn't implement `Display`/`ToString` on the wasm
     /// target, so constraint strings (which are always short) are read via
     /// `copy_into_slice` instead of allocating.
-    fn constraint_str_buf(constraint: &String) -> Result<([u8; MAX_CONSTRAINT_LEN], usize), RegistryError> {
+    fn constraint_str_buf(
+        constraint: &String,
+    ) -> Result<([u8; MAX_CONSTRAINT_LEN], usize), RegistryError> {
         let len = constraint.len() as usize;
         if len > MAX_CONSTRAINT_LEN {
             return Err(RegistryError::InvalidConstraint);
@@ -1223,7 +1223,10 @@ mod tests {
         assert_eq!(event.0, client.address);
         assert_eq!(
             event.1,
-            vec![&env, Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED).into_val(&env)]
+            vec![
+                &env,
+                Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED).into_val(&env)
+            ]
         );
         let (old, new): (Address, Address) = event.2.into_val(&env);
         assert_eq!(old, admin);
@@ -1953,7 +1956,14 @@ mod tests {
         // rejection happens pre-invocation, so the function does not need
         // to actually exist on the target — we just need it to NOT be in
         // the `health`/`ping` allow-list.
-        for sym_str in ["reset", "pause", "unpause", "increment", "nonexistent", "init"] {
+        for sym_str in [
+            "reset",
+            "pause",
+            "unpause",
+            "increment",
+            "nonexistent",
+            "init",
+        ] {
             let (env, admin, client) = setup();
             let mock_id = env.register_contract(None, MockHealthContract);
             let name = String::from_str(&env, "oracle");

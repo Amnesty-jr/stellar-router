@@ -247,11 +247,7 @@ impl RouterQuote {
     ///
     /// # Errors
     /// * [`QuoteError::Unauthorized`] — if caller is not the admin.
-    pub fn unset_route_fee(
-        env: Env,
-        caller: Address,
-        route: String,
-    ) -> Result<(), QuoteError> {
+    pub fn unset_route_fee(env: Env, caller: Address, route: String) -> Result<(), QuoteError> {
         caller.require_auth();
         router_common::require_admin_simple!(&env, &caller, &DataKey::Admin, QuoteError)?;
 
@@ -676,8 +672,6 @@ impl RouterQuote {
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
-
-
 
     fn read_configured_routes(env: &Env) -> Vec<String> {
         env.storage()
@@ -1269,7 +1263,13 @@ mod tests {
     fn test_set_route_fee_tiers_rejects_negative_min_amount() {
         let (env, admin, client) = setup();
         let route = String::from_str(&env, "uniswap");
-        let tiers = vec![&env, FeeTier { min_amount: -1, fee_bps: 50 }];
+        let tiers = vec![
+            &env,
+            FeeTier {
+                min_amount: -1,
+                fee_bps: 50,
+            },
+        ];
         let result = client.try_set_route_fee_tiers(&admin, &route, &tiers);
         assert_eq!(result, Err(Ok(QuoteError::InvalidFeeTier)));
     }
@@ -1278,7 +1278,13 @@ mod tests {
     fn test_set_route_fee_tiers_rejects_fee_bps_over_max() {
         let (env, admin, client) = setup();
         let route = String::from_str(&env, "uniswap");
-        let tiers = vec![&env, FeeTier { min_amount: 0, fee_bps: 10001 }];
+        let tiers = vec![
+            &env,
+            FeeTier {
+                min_amount: 0,
+                fee_bps: 10001,
+            },
+        ];
         let result = client.try_set_route_fee_tiers(&admin, &route, &tiers);
         assert_eq!(result, Err(Ok(QuoteError::InvalidFeeBps)));
     }
@@ -1456,10 +1462,7 @@ mod tests {
         let last = events.last().unwrap();
 
         let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
-        assert_eq!(
-            topic,
-            Symbol::new(&env, router_common::EVENT_ROUTE_FEE_SET)
-        );
+        assert_eq!(topic, Symbol::new(&env, router_common::EVENT_ROUTE_FEE_SET));
 
         let (emitted_route, emitted_fee): (String, u32) = last.2.into_val(&env);
         assert_eq!(emitted_route, route);

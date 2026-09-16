@@ -58,8 +58,8 @@ pub enum DataKey {
     Score(String),        // name -> RouteScore
     Metadata(String),     // name -> RouteMetadata (stored separately; avoids nested contracttype)
     Dependencies(String), // name -> Vec<String> of direct dependencies
-    Dependents(String),   // name -> Vec<String> of routes that declare `name` as a dependency (reverse index)
-    BestRoute,            // cached name of the highest-scoring non-paused route, if any
+    Dependents(String), // name -> Vec<String> of routes that declare `name` as a dependency (reverse index)
+    BestRoute,          // cached name of the highest-scoring non-paused route, if any
 
     /// Configurable weights used by the composite scoring formula.
     ScoringWeights,
@@ -279,7 +279,11 @@ impl RouterCore {
     ///
     /// # Errors
     /// * [`RouterError::AlreadyInitialized`] ΓÇö if the contract has already been initialized.
-    pub fn initialize(env: Env, admin: Address, max_routes: Option<u32>) -> Result<(), RouterError> {
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        max_routes: Option<u32>,
+    ) -> Result<(), RouterError> {
         admin.require_auth();
         router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         if env.storage().instance().has(&DataKey::Admin) {
@@ -1839,7 +1843,10 @@ impl RouterCore {
         caller.require_auth();
         router_common::require_admin_simple!(&env, &caller, &DataKey::Admin, RouterError)?;
 
-        if weights.fee_divisor <= 0 || weights.liquidity_weight < 0 || weights.reliability_weight < 0 {
+        if weights.fee_divisor <= 0
+            || weights.liquidity_weight < 0
+            || weights.reliability_weight < 0
+        {
             return Err(RouterError::InvalidScoringWeights);
         }
 
@@ -3195,7 +3202,10 @@ mod tests {
         assert_eq!(event.0, client.address);
         assert_eq!(
             event.1,
-            vec![&env, Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED).into_val(&env)]
+            vec![
+                &env,
+                Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED).into_val(&env)
+            ]
         );
     }
 
@@ -6166,7 +6176,11 @@ mod tests {
         let valid_addr = Address::generate(&env);
 
         client.register_route(&admin, &name, &valid_addr, &None);
-        assert_eq!(client.resolve(&name), valid_addr, "valid address should be accepted");
+        assert_eq!(
+            client.resolve(&name),
+            valid_addr,
+            "valid address should be accepted"
+        );
     }
 
     // ── Issue #1057: recursion-depth-limit tests ──────────────────────────

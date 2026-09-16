@@ -410,7 +410,12 @@ impl RouterExecution {
         // be executed twice for a single successful `execute()` call.
         let mut carried_first_result: Option<bool> = None;
         if request.simulate_first {
-            let sim_ok = Self::dry_run_invoke(&env, &request.target, &request.function, request.args.clone());
+            let sim_ok = Self::dry_run_invoke(
+                &env,
+                &request.target,
+                &request.function,
+                request.args.clone(),
+            );
             if !sim_ok {
                 Self::log_error(
                     &env,
@@ -442,7 +447,12 @@ impl RouterExecution {
             let invoke_ok = if let Some(result) = carried_first_result.take() {
                 result
             } else {
-                Self::dry_run_invoke(&env, &request.target, &request.function, request.args.clone())
+                Self::dry_run_invoke(
+                    &env,
+                    &request.target,
+                    &request.function,
+                    request.args.clone(),
+                )
             };
 
             if invoke_ok {
@@ -465,11 +475,8 @@ impl RouterExecution {
                     // Compute the delay the caller should wait before the next
                     // retry: base_ms * multiplier^(attempt-1) / 100^(attempt-1).
                     // Emitting this lets off-chain orchestrators honour the backoff.
-                    let delay_ms = Self::compute_backoff_ms(
-                        backoff_base_ms,
-                        backoff_multiplier,
-                        attempts - 1,
-                    );
+                    let delay_ms =
+                        Self::compute_backoff_ms(backoff_base_ms, backoff_multiplier, attempts - 1);
                     env.events().publish(
                         (Symbol::new(&env, router_common::EVENT_EXECUTION_RETRY),),
                         (&request.target, &request.function, attempts, delay_ms),
@@ -540,8 +547,7 @@ impl RouterExecution {
         // NOTE: `caller_asserted_load_bps` is caller-supplied and unverified —
         // see the doc comment above. `high_load` below reflects only what the
         // caller asserted, not a confirmed network condition.
-        let (surge_multiplier, high_load) = if caller_asserted_load_bps >= HIGH_LOAD_THRESHOLD_BPS
-        {
+        let (surge_multiplier, high_load) = if caller_asserted_load_bps >= HIGH_LOAD_THRESHOLD_BPS {
             (SURGE_MULTIPLIER, true)
         } else {
             (NORMAL_MULTIPLIER, false)
@@ -974,12 +980,7 @@ impl RouterExecution {
             .set(&DataKey::ExecHistory, &history);
     }
 
-    fn dry_run_invoke(
-        env: &Env,
-        target: &Address,
-        function: &Symbol,
-        args: Vec<Val>,
-    ) -> bool {
+    fn dry_run_invoke(env: &Env, target: &Address, function: &Symbol, args: Vec<Val>) -> bool {
         env.try_invoke_contract::<Val, Val>(target, function, args)
             .is_ok()
     }
@@ -1153,7 +1154,10 @@ mod tests {
         client.transfer_admin(&admin, &new_admin);
         let event = env.events().all().last().unwrap().clone();
         let topic: Symbol = event.1.get(0).unwrap().into_val(&env);
-        assert_eq!(topic, Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED));
+        assert_eq!(
+            topic,
+            Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED)
+        );
     }
 
     #[test]
@@ -1317,7 +1321,10 @@ mod tests {
         env.as_contract(&client.address, || {
             for i in 0..5u32 {
                 RouterExecution::append_history(&env, &target, &function, true, 0);
-                assert_eq!(RouterExecution::execution_history_len(env.clone()), Ok(i + 1));
+                assert_eq!(
+                    RouterExecution::execution_history_len(env.clone()),
+                    Ok(i + 1)
+                );
             }
         });
         assert_eq!(client.execution_history_len(), 5);

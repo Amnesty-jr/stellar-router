@@ -236,7 +236,9 @@ impl TestSuite {
     }
 
     pub fn core(&self) -> Result<&DeployedContract, String> {
-        self.router_core.as_ref().ok_or("Core contract not deployed".to_string())
+        self.router_core
+            .as_ref()
+            .ok_or("Core contract not deployed".to_string())
     }
 
     pub fn registry(&self) -> Result<&DeployedContract, String> {

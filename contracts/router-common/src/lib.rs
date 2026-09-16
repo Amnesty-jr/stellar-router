@@ -558,9 +558,7 @@ mod tests {
         let id = env.register_contract(None, AdminTestContract);
         let result: Result<(), AdminTestError> = env.as_contract(&id, || {
             let admin = Address::generate(&env);
-            env.storage()
-                .instance()
-                .set(&CommonDataKey::Admin, &admin);
+            env.storage().instance().set(&CommonDataKey::Admin, &admin);
 
             require_admin!(
                 &env,
@@ -581,9 +579,7 @@ mod tests {
         let result: Result<(), AdminTestError> = env.as_contract(&id, || {
             let admin = Address::generate(&env);
             let attacker = Address::generate(&env);
-            env.storage()
-                .instance()
-                .set(&CommonDataKey::Admin, &admin);
+            env.storage().instance().set(&CommonDataKey::Admin, &admin);
 
             require_admin!(
                 &env,
@@ -626,9 +622,7 @@ mod tests {
         let id = env.register_contract(None, AdminTestContract);
         let result: Result<(), AdminTestError> = env.as_contract(&id, || {
             let admin = Address::generate(&env);
-            env.storage()
-                .instance()
-                .set(&CommonDataKey::Admin, &admin);
+            env.storage().instance().set(&CommonDataKey::Admin, &admin);
 
             require_admin_simple!(&env, &admin, &CommonDataKey::Admin, AdminTestError)
         });
@@ -643,9 +637,7 @@ mod tests {
         let result: Result<(), AdminTestError> = env.as_contract(&id, || {
             let admin = Address::generate(&env);
             let attacker = Address::generate(&env);
-            env.storage()
-                .instance()
-                .set(&CommonDataKey::Admin, &admin);
+            env.storage().instance().set(&CommonDataKey::Admin, &admin);
 
             require_admin_simple!(&env, &attacker, &CommonDataKey::Admin, AdminTestError)
         });

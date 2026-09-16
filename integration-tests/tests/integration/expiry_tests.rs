@@ -27,10 +27,14 @@ fn register_with_ttl(
     core.invoke(
         "register_route_with_ttl",
         &[
-            "--caller", &admin.address,
-            "--name", name,
-            "--address", addr,
-            "--ttl_ledgers", &ttl.to_string(),
+            "--caller",
+            &admin.address,
+            "--name",
+            name,
+            "--address",
+            addr,
+            "--ttl_ledgers",
+            &ttl.to_string(),
         ],
         admin,
     )
@@ -46,10 +50,14 @@ fn register_permanent(
     core.invoke(
         "register_route",
         &[
-            "--caller", &admin.address,
-            "--name", name,
-            "--address", addr,
-            "--metadata", "null",
+            "--caller",
+            &admin.address,
+            "--name",
+            name,
+            "--address",
+            addr,
+            "--metadata",
+            "null",
         ],
         admin,
     )
@@ -70,8 +78,7 @@ fn test_resolve_expired_route_returns_error() {
 
     // Register with TTL = 0 ledgers → expires at current ledger; the very
     // next block advances sequence past it.
-    register_with_ttl(core, admin, "expiring-route", &target, 0)
-        .expect("register_route_with_ttl");
+    register_with_ttl(core, admin, "expiring-route", &target, 0).expect("register_route_with_ttl");
 
     // Wait for one ledger to advance so the route is expired.
     std::thread::sleep(std::time::Duration::from_secs(6));
@@ -115,7 +122,10 @@ fn test_permanent_route_never_expires() {
         "resolved address mismatch: {}",
         resolved
     );
-    println!("✓ Permanent route still resolves after ledger advance: {}", resolved);
+    println!(
+        "✓ Permanent route still resolves after ledger advance: {}",
+        resolved
+    );
 }
 
 // ── Test 3: batch_resolve with mixed active and expired routes ────────────────
@@ -133,8 +143,7 @@ fn test_batch_resolve_mixed_expiry() {
     let expired_addr = TestAccount::generate().expect("gen expired").address;
 
     register_permanent(core, admin, "batch-active", &active_addr).expect("register active");
-    register_with_ttl(core, admin, "batch-expired", &expired_addr, 0)
-        .expect("register expiring");
+    register_with_ttl(core, admin, "batch-expired", &expired_addr, 0).expect("register expiring");
 
     // Let the short-TTL route expire.
     std::thread::sleep(std::time::Duration::from_secs(6));
@@ -184,9 +193,12 @@ fn test_extend_ttl_fails_after_expiry() {
     let result = core.try_invoke(
         "extend_route_ttl",
         &[
-            "--caller", &admin.address,
-            "--name", "extend-expired",
-            "--additional_ledgers", "100",
+            "--caller",
+            &admin.address,
+            "--name",
+            "extend-expired",
+            "--additional_ledgers",
+            "100",
         ],
         admin,
     );
@@ -197,7 +209,10 @@ fn test_extend_ttl_fails_after_expiry() {
         "expected RouteExpired, got: {}",
         err
     );
-    println!("✓ extend_route_ttl correctly rejects expired route: {}", err);
+    println!(
+        "✓ extend_route_ttl correctly rejects expired route: {}",
+        err
+    );
 }
 
 // ── Test 5: extend_route_ttl succeeds before expiry ──────────────────────────
@@ -218,9 +233,12 @@ fn test_extend_ttl_before_expiry_succeeds() {
     core.invoke(
         "extend_route_ttl",
         &[
-            "--caller", &admin.address,
-            "--name", "extend-active",
-            "--additional_ledgers", "500",
+            "--caller",
+            &admin.address,
+            "--name",
+            "extend-active",
+            "--additional_ledgers",
+            "500",
         ],
         admin,
     )
@@ -231,6 +249,13 @@ fn test_extend_ttl_before_expiry_succeeds() {
         .invoke("resolve", &["--name", "extend-active"], admin)
         .expect("route must resolve after TTL extension");
 
-    assert!(resolved.contains(&target), "resolved address mismatch: {}", resolved);
-    println!("✓ extend_route_ttl succeeded; route still resolves: {}", resolved);
+    assert!(
+        resolved.contains(&target),
+        "resolved address mismatch: {}",
+        resolved
+    );
+    println!(
+        "✓ extend_route_ttl succeeded; route still resolves: {}",
+        resolved
+    );
 }

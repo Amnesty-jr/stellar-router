@@ -53,7 +53,10 @@ impl TestAccount {
 
     /// Fund this account using Friendbot
     pub fn fund(&self, network: &str) -> Result<(), String> {
-        println!("Funding account {} via Friendbot on {}...", self.address, network);
+        println!(
+            "Funding account {} via Friendbot on {}...",
+            self.address, network
+        );
 
         let output = Command::new("stellar")
             .args(["keys", "fund", &self.address, "--network", network])

@@ -158,7 +158,10 @@ mod tests {
                 .storage()
                 .instance()
                 .has(&DataKey::CallLogSummary(route.clone())));
-            assert!(env.storage().instance().has(&DataKey::CallLog(route.clone())));
+            assert!(env
+                .storage()
+                .instance()
+                .has(&DataKey::CallLog(route.clone())));
 
             clear(&env, &route);
 
@@ -166,7 +169,10 @@ mod tests {
                 .storage()
                 .instance()
                 .has(&DataKey::CallLogSummary(route.clone())));
-            assert!(!env.storage().instance().has(&DataKey::CallLog(route.clone())));
+            assert!(!env
+                .storage()
+                .instance()
+                .has(&DataKey::CallLog(route.clone())));
         });
     }
 }
