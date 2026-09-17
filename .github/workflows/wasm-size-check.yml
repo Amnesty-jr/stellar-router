@@ -34,6 +34,18 @@ jobs:
       - name: Build WASM contracts
         run: cargo build --target wasm32-unknown-unknown --release
 
+      # See scripts/fix-wasm-compat.sh: modern rustc/LLD emits a WASM
+      # encoding Soroban's VM rejects outright, regardless of rustc flags.
+      # Without this the measured/baselined sizes wouldn't reflect what's
+      # actually deployable.
+      - name: Install wasm-opt
+        run: |
+          curl -sL https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-linux.tar.gz | tar -xz
+          echo "$PWD/binaryen-version_132/bin" >> "$GITHUB_PATH"
+
+      - name: Fix WASM compatibility
+        run: bash scripts/fix-wasm-compat.sh
+
       - name: Check WASM sizes
         run: |
           CONTRACTS=(

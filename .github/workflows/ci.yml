@@ -141,6 +141,20 @@ jobs:
       - name: Build WASM contracts
         run: cargo build --target wasm32-unknown-unknown --release
 
+      # Modern rustc/LLD always emits a WASM "elem" section encoding that
+      # Soroban's WASM VM rejects outright ("reference-types not enabled"),
+      # regardless of rustc target-feature/target-cpu flags — see
+      # scripts/fix-wasm-compat.sh for the full explanation. Without this
+      # step the built contracts cannot be deployed to any real Soroban
+      # network.
+      - name: Install wasm-opt
+        run: |
+          curl -sL https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-linux.tar.gz | tar -xz
+          echo "$PWD/binaryen-version_132/bin" >> "$GITHUB_PATH"
+
+      - name: Fix WASM compatibility
+        run: bash scripts/fix-wasm-compat.sh
+
       - name: Upload WASM artifacts
         uses: actions/upload-artifact@v4
         with:

@@ -20,3 +20,5 @@ lint:
 
 build-wasm:
 	cargo build --target wasm32-unknown-unknown --release
+	@command -v wasm-opt >/dev/null 2>&1 && bash scripts/fix-wasm-compat.sh || \
+		echo "WARNING: wasm-opt not found — contracts will NOT deploy to a real Soroban network. See scripts/fix-wasm-compat.sh."

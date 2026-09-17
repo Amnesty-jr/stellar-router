@@ -46,6 +46,13 @@ RUN cargo build --target wasm32-unknown-unknown --release \
     --package router-quote \
     --package router-execution
 
+# Modern rustc/LLD emits a WASM encoding Soroban's VM rejects outright,
+# regardless of rustc flags — see scripts/fix-wasm-compat.sh. Without this,
+# contracts built by this stage cannot be deployed to any real network.
+COPY scripts/fix-wasm-compat.sh scripts/fix-wasm-compat.sh
+RUN curl -sL https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-linux.tar.gz | tar -xz -C /usr/local --strip-components=1 && \
+    bash scripts/fix-wasm-compat.sh
+
 # ── Metrics exporter builder ──────────────────────────────────────────────────
 # router-metrics-exporter is its own standalone workspace (see metrics/Cargo.toml),
 # not a member of the root workspace, so it's built separately.

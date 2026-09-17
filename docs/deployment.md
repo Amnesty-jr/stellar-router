@@ -11,6 +11,7 @@ Step-by-step instructions for deploying the stellar-router suite to Stellar test
 | Rust | stable | `rustup install stable` |
 | wasm32 target | — | `rustup target add wasm32-unknown-unknown` |
 | Stellar CLI | latest | `cargo install --locked stellar-cli` |
+| Binaryen (`wasm-opt`) | — | See [Build WASM Artifacts](#build-wasm-artifacts) — **required**, contracts will not deploy without it |
 | Funded account | — | See [Friendbot](#funding-a-testnet-account) |
 
 ---
@@ -32,14 +33,11 @@ Step-by-step instructions for deploying the stellar-router suite to Stellar test
 ## Funding a Testnet Account
 
 ```bash
-# Generate a new keypair
-stellar keys generate --global admin --network testnet
+# Generate a new named identity
+stellar keys generate admin
 
-# Fund via Friendbot
+# Fund via Friendbot (prints a confirmation on success)
 stellar keys fund admin --network testnet
-
-# Verify balance
-stellar account show admin --network testnet
 ```
 
 ---
@@ -49,6 +47,19 @@ stellar account show admin --network testnet
 ```bash
 cargo build --target wasm32-unknown-unknown --release
 ```
+
+**Then fix the contracts for Soroban VM compatibility** — modern rustc/LLD
+emits a WASM encoding Soroban's VM rejects outright regardless of rustc
+flags (see `scripts/fix-wasm-compat.sh` for the full explanation).
+**Contracts built without this step will fail to deploy to any real
+network.** Requires [Binaryen](https://github.com/WebAssembly/binaryen)'s
+`wasm-opt` on `PATH`:
+
+```bash
+bash scripts/fix-wasm-compat.sh
+```
+
+Or simply `make build-wasm`, which runs both steps together.
 
 Artifacts will be at:
 ```
