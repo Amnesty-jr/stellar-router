@@ -36,6 +36,9 @@ pub enum DataKey {
     MaxPendingOps,
     /// `op_id -> Vec<Bytes>`: dependency operation IDs for a given op.
     Deps(Bytes),
+    /// `Vec<Bytes>`: IDs of executed or cancelled ops whose `Op`/`Deps`
+    /// storage has not yet been reclaimed by `cleanup_expired`.
+    FinalizedOps,
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -75,7 +78,8 @@ pub enum OperationStatus {
     Cancelled,
     /// Grace period has elapsed without execution; operation can no longer be executed.
     Expired,
-    /// One or more dependencies were cancelled; this operation can never execute.
+    /// One or more dependencies were cancelled or expired without executing;
+    /// this operation can never execute.
     Blocked,
 }
 
@@ -318,6 +322,7 @@ impl RouterTimelock {
             .set(&DataKey::Op(op_id.clone()), &op);
 
         Self::remove_from_pending_ops(&env, &op_id);
+        Self::add_to_finalized_ops(&env, &op_id);
 
         env.events().publish(
             (Symbol::new(&env, router_common::EVENT_OP_CANCELLED),),
@@ -376,6 +381,7 @@ impl RouterTimelock {
             .set(&DataKey::Op(op_id.clone()), &op);
 
         Self::remove_from_pending_ops(&env, &op_id);
+        Self::add_to_finalized_ops(&env, &op_id);
 
         env.events().publish(
             (Symbol::new(&env, router_common::EVENT_OP_EXECUTED),),
@@ -434,7 +440,14 @@ impl RouterTimelock {
         Ok(())
     }
 
-    /// Remove expired operations from the pending operations queue.
+    /// Reclaim storage for operations that can never execute again.
+    ///
+    /// Removes expired operations from the pending operations index, and frees
+    /// the `Op`/`Deps` storage of expired, executed and cancelled operations.
+    /// An operation that is still a dependency of a live (non-expired) pending
+    /// operation is skipped, since removing it would change that operation's
+    /// dependency checks; it is reclaimed on a later call once its dependents
+    /// are finalized or expired.
     ///
     /// This permissionless function allows anyone to clean up stale state and help
     /// keep the contract within storage limits.
@@ -458,14 +471,42 @@ impl RouterTimelock {
             .instance()
             .get(&DataKey::PendingOps)
             .unwrap_or_else(|| Vec::new(&env));
+        let finalized: Vec<Bytes> = env
+            .storage()
+            .instance()
+            .get(&DataKey::FinalizedOps)
+            .unwrap_or_else(|| Vec::new(&env));
 
         let now = env.ledger().timestamp();
+
+        // Dependencies of live pending ops must keep their storage, otherwise
+        // `require_dependencies_executed` / `has_blocked_dependency` would see
+        // them as missing.
+        let mut referenced: Vec<Bytes> = Vec::new(&env);
+        for op_id in pending.iter() {
+            if let Some(op) = env
+                .storage()
+                .instance()
+                .get::<DataKey, Op>(&DataKey::Op(op_id.clone()))
+            {
+                if !Self::is_expired(&op, now) {
+                    let deps: Vec<Bytes> = env
+                        .storage()
+                        .instance()
+                        .get(&DataKey::Deps(op_id))
+                        .unwrap_or_else(|| Vec::new(&env));
+                    referenced.append(&deps);
+                }
+            }
+        }
+
         let mut cleaned_count = 0u32;
         let mut new_pending = Vec::new(&env);
+        let mut new_finalized = Vec::new(&env);
 
         for op_id in pending.iter() {
             if cleaned_count >= limit {
-                new_pending.push_back(op_id.clone());
+                new_pending.push_back(op_id);
                 continue;
             }
 
@@ -474,18 +515,10 @@ impl RouterTimelock {
                 .instance()
                 .get::<DataKey, Op>(&DataKey::Op(op_id.clone()))
             {
-                // Use checked_add: if overflow occurs treat the op as expired
-                // (i.e. clean it up) rather than leaving it stuck in the queue.
-                let is_expired = op
-                    .eta
-                    .checked_add(op.grace_period_seconds)
-                    .is_none_or(|expiry| now > expiry);
-                if is_expired || op.executed || op.cancelled {
-                    // It is expired or finalized! Remove the underlying storage entries.
-                    env.storage().instance().remove(&DataKey::Op(op_id.clone()));
-                    env.storage()
-                        .instance()
-                        .remove(&DataKey::Deps(op_id.clone()));
+                // Overflow is treated as expired (i.e. clean it up) rather
+                // than leaving the op stuck in the queue.
+                if Self::is_expired(&op, now) && !referenced.contains(&op_id) {
+                    Self::remove_op_storage(&env, &op_id);
                     cleaned_count += 1;
                 } else {
                     new_pending.push_back(op_id);
@@ -496,10 +529,22 @@ impl RouterTimelock {
             }
         }
 
+        for op_id in finalized.iter() {
+            if cleaned_count >= limit || referenced.contains(&op_id) {
+                new_finalized.push_back(op_id);
+                continue;
+            }
+            Self::remove_op_storage(&env, &op_id);
+            cleaned_count += 1;
+        }
+
         if cleaned_count > 0 {
             env.storage()
                 .instance()
                 .set(&DataKey::PendingOps, &new_pending);
+            env.storage()
+                .instance()
+                .set(&DataKey::FinalizedOps, &new_finalized);
             env.events().publish(
                 (Symbol::new(&env, router_common::EVENT_OPS_CLEANED),),
                 cleaned_count,
@@ -671,7 +716,12 @@ impl RouterTimelock {
                             && within_grace
                             && !Self::has_blocked_dependency(&env, &op_id)
                     }
-                    OperationStatus::Queued => !op.executed && !op.cancelled && now < op.eta,
+                    OperationStatus::Queued => {
+                        !op.executed
+                            && !op.cancelled
+                            && now < op.eta
+                            && !Self::has_blocked_dependency(&env, &op_id)
+                    }
                     OperationStatus::Blocked => {
                         let within_grace = op
                             .eta
@@ -734,7 +784,12 @@ impl RouterTimelock {
                             && within_grace
                             && !Self::has_blocked_dependency(&env, &op_id)
                     }
-                    OperationStatus::Queued => !op.executed && !op.cancelled && now < op.eta,
+                    OperationStatus::Queued => {
+                        !op.executed
+                            && !op.cancelled
+                            && now < op.eta
+                            && !Self::has_blocked_dependency(&env, &op_id)
+                    }
                     OperationStatus::Blocked => {
                         let within_grace = op
                             .eta
@@ -945,27 +1000,62 @@ impl RouterTimelock {
         Ok(())
     }
 
-    /// Returns `true` if any direct dependency of `op_id` has been cancelled,
-    /// meaning this operation can never execute (its dependency will never be
-    /// executed, so `require_dependencies_executed` will always fail).
+    /// Returns `true` if any direct dependency of `op_id` can never be
+    /// executed — it was cancelled, it expired without executing, or its
+    /// storage no longer exists — meaning this operation can never execute
+    /// either (`require_dependencies_executed` will always fail).
     fn has_blocked_dependency(env: &Env, op_id: &Bytes) -> bool {
         let deps: Vec<Bytes> = env
             .storage()
             .instance()
             .get(&DataKey::Deps(op_id.clone()))
             .unwrap_or_else(|| Vec::new(env));
+        let now = env.ledger().timestamp();
         for dep_id in deps.iter() {
-            if let Some(dep_op) = env
+            match env
                 .storage()
                 .instance()
                 .get::<DataKey, Op>(&DataKey::Op(dep_id))
             {
-                if dep_op.cancelled {
-                    return true;
+                Some(dep_op) => {
+                    if dep_op.cancelled || (!dep_op.executed && Self::is_expired(&dep_op, now)) {
+                        return true;
+                    }
                 }
+                None => return true,
             }
         }
         false
+    }
+
+    /// Returns `true` if `now` is past `eta + grace_period_seconds`.
+    /// Overflow is treated as expired, consistent with the status queries.
+    fn is_expired(op: &Op, now: u64) -> bool {
+        op.eta
+            .checked_add(op.grace_period_seconds)
+            .is_none_or(|expiry| now > expiry)
+    }
+
+    /// Add an executed or cancelled operation ID to the finalized ops index so
+    /// `cleanup_expired` can later reclaim its storage.
+    fn add_to_finalized_ops(env: &Env, op_id: &Bytes) {
+        let mut finalized: Vec<Bytes> = env
+            .storage()
+            .instance()
+            .get(&DataKey::FinalizedOps)
+            .unwrap_or_else(|| Vec::new(env));
+        finalized.push_back(op_id.clone());
+        env.storage()
+            .instance()
+            .set(&DataKey::FinalizedOps, &finalized);
+    }
+
+    /// Delete the `Op` and `Deps` storage entries for `op_id`.
+    fn remove_op_storage(env: &Env, op_id: &Bytes) {
+        env.storage().instance().remove(&DataKey::Op(op_id.clone()));
+        env.storage()
+            .instance()
+            .remove(&DataKey::Deps(op_id.clone()));
     }
 
     /// Remove an operation ID from the pending ops index.
@@ -2308,7 +2398,7 @@ mod tests {
             &grace,
             &deps,
         );
-        let _op3 = client.queue(
+        let op3 = client.queue(
             &admin,
             &String::from_str(&env, "op3"),
             &target,
@@ -2328,12 +2418,365 @@ mod tests {
         let now = env.ledger().timestamp();
         env.ledger().with_mut(|l| l.timestamp = now + grace + 1);
 
-        // op1 and op2 already removed themselves from the pending index when
-        // cancelled/executed, so cleanup_expired only has op3 (expired) left to remove.
+        // Cancelled op1, executed op2 and expired op3 are all reclaimed.
         let cleaned = client.cleanup_expired(&admin, &10);
-        assert_eq!(cleaned, 1);
+        assert_eq!(cleaned, 3);
 
+        assert_eq!(client.get_op(&op1), None);
+        assert_eq!(client.get_op(&op2), None);
+        assert_eq!(client.get_op(&op3), None);
         assert_eq!(client.get_pending_operations().len(), 0);
+
+        // Nothing left to reclaim.
+        assert_eq!(client.cleanup_expired(&admin, &10), 0);
+    }
+
+    #[test]
+    fn test_cleanup_expired_frees_deps_of_finalized_ops() {
+        let (env, admin, client) = setup();
+        let target = Address::generate(&env);
+        let no_deps: Vec<Bytes> = Vec::new(&env);
+
+        let parent_id = client.queue(
+            &admin,
+            &String::from_str(&env, "parent"),
+            &target,
+            &3600,
+            &GRACE,
+            &no_deps,
+        );
+        let mut deps = Vec::new(&env);
+        deps.push_back(parent_id.clone());
+        let child_id = client.queue(
+            &admin,
+            &String::from_str(&env, "child"),
+            &target,
+            &3600,
+            &GRACE,
+            &deps,
+        );
+
+        env.ledger().with_mut(|l| l.timestamp += 3601);
+        client.execute(&admin, &parent_id);
+        client.execute(&admin, &child_id);
+
+        assert_eq!(client.cleanup_expired(&admin, &10), 2);
+        assert_eq!(client.get_op(&child_id), None);
+        assert_eq!(client.get_dependencies(&child_id).len(), 0);
+    }
+
+    #[test]
+    fn test_cleanup_expired_respects_limit_for_finalized_ops() {
+        let (env, admin, client) = setup();
+        let target = Address::generate(&env);
+        let deps: Vec<Bytes> = Vec::new(&env);
+
+        for i in 0..3u32 {
+            let desc = std::format!("op_{}", i);
+            let op_id = client.queue(
+                &admin,
+                &String::from_str(&env, &desc),
+                &target,
+                &3600,
+                &GRACE,
+                &deps,
+            );
+            client.cancel(&admin, &op_id);
+        }
+
+        assert_eq!(client.cleanup_expired(&admin, &2), 2);
+        assert_eq!(client.cleanup_expired(&admin, &10), 1);
+        assert_eq!(client.cleanup_expired(&admin, &10), 0);
+    }
+
+    #[test]
+    fn test_cleanup_expired_keeps_executed_dependency_of_live_op() {
+        // Reclaiming an executed parent while a live child still depends on
+        // it would make the child permanently unexecutable.
+        let (env, admin, client) = setup();
+        let target = Address::generate(&env);
+        let no_deps: Vec<Bytes> = Vec::new(&env);
+
+        let parent_id = client.queue(
+            &admin,
+            &String::from_str(&env, "parent"),
+            &target,
+            &3600,
+            &GRACE,
+            &no_deps,
+        );
+        let mut deps = Vec::new(&env);
+        deps.push_back(parent_id.clone());
+        let child_id = client.queue(
+            &admin,
+            &String::from_str(&env, "child"),
+            &target,
+            &3600,
+            &GRACE,
+            &deps,
+        );
+
+        env.ledger().with_mut(|l| l.timestamp += 3601);
+        client.execute(&admin, &parent_id);
+
+        assert_eq!(client.cleanup_expired(&admin, &10), 0);
+        assert!(client.get_op(&parent_id).unwrap().executed);
+        assert_eq!(
+            client.get_operation_status(&child_id),
+            Some(OperationStatus::Ready)
+        );
+
+        client.execute(&admin, &child_id);
+
+        // With the child finalized, both can now be reclaimed.
+        assert_eq!(client.cleanup_expired(&admin, &10), 2);
+        assert_eq!(client.get_op(&parent_id), None);
+        assert_eq!(client.get_op(&child_id), None);
+    }
+
+    #[test]
+    fn test_cleanup_expired_keeps_cancelled_dependency_of_live_op() {
+        // Reclaiming a cancelled parent would hide the child's Blocked status.
+        let (env, admin, client) = setup();
+        let target = Address::generate(&env);
+        let no_deps: Vec<Bytes> = Vec::new(&env);
+
+        let parent_id = client.queue(
+            &admin,
+            &String::from_str(&env, "parent"),
+            &target,
+            &3600,
+            &GRACE,
+            &no_deps,
+        );
+        let mut deps = Vec::new(&env);
+        deps.push_back(parent_id.clone());
+        let child_id = client.queue(
+            &admin,
+            &String::from_str(&env, "child"),
+            &target,
+            &3600,
+            &GRACE,
+            &deps,
+        );
+
+        client.cancel(&admin, &parent_id);
+
+        assert_eq!(client.cleanup_expired(&admin, &10), 0);
+        assert!(client.get_op(&parent_id).unwrap().cancelled);
+        assert_eq!(
+            client.get_operation_status(&child_id),
+            Some(OperationStatus::Blocked)
+        );
+    }
+
+    #[test]
+    fn test_cleanup_expired_keeps_expired_dependency_of_live_op() {
+        let (env, admin, client) = setup();
+        let target = Address::generate(&env);
+        let no_deps: Vec<Bytes> = Vec::new(&env);
+        let short_grace: u64 = 3600;
+
+        let parent_id = client.queue(
+            &admin,
+            &String::from_str(&env, "parent"),
+            &target,
+            &3600,
+            &short_grace,
+            &no_deps,
+        );
+        let mut deps = Vec::new(&env);
+        deps.push_back(parent_id.clone());
+        let child_id = client.queue(
+            &admin,
+            &String::from_str(&env, "child"),
+            &target,
+            &3600,
+            &GRACE,
+            &deps,
+        );
+
+        // Parent expires; child is still within its own grace period.
+        env.ledger()
+            .with_mut(|l| l.timestamp += 3600 + short_grace + 1);
+
+        assert_eq!(client.cleanup_expired(&admin, &10), 0);
+        assert!(client.get_op(&parent_id).is_some());
+        assert_eq!(
+            client.get_operation_status(&child_id),
+            Some(OperationStatus::Blocked)
+        );
+
+        // Once the child expires too, both are reclaimed.
+        env.ledger().with_mut(|l| l.timestamp += GRACE);
+        assert_eq!(client.cleanup_expired(&admin, &10), 2);
+        assert_eq!(client.get_op(&parent_id), None);
+        assert_eq!(client.get_op(&child_id), None);
+    }
+
+    // ── Blocked status ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_operation_status_blocked_when_dependency_cancelled() {
+        let (env, admin, client) = setup();
+        let target = Address::generate(&env);
+        let no_deps: Vec<Bytes> = Vec::new(&env);
+
+        let parent_id = client.queue(
+            &admin,
+            &String::from_str(&env, "parent"),
+            &target,
+            &3600,
+            &GRACE,
+            &no_deps,
+        );
+        let mut deps = Vec::new(&env);
+        deps.push_back(parent_id.clone());
+        let child_id = client.queue(
+            &admin,
+            &String::from_str(&env, "child"),
+            &target,
+            &3600,
+            &GRACE,
+            &deps,
+        );
+
+        assert_eq!(
+            client.get_operation_status(&child_id),
+            Some(OperationStatus::Queued)
+        );
+
+        client.cancel(&admin, &parent_id);
+
+        assert_eq!(
+            client.get_operation_status(&child_id),
+            Some(OperationStatus::Blocked)
+        );
+        assert_eq!(
+            client.get_operation_count_by_status(&OperationStatus::Blocked),
+            1
+        );
+        assert_eq!(
+            client.get_operation_count_by_status(&OperationStatus::Queued),
+            0
+        );
+        let blocked = client.get_operations_by_status(&OperationStatus::Blocked);
+        assert_eq!(blocked.len(), 1);
+        assert_eq!(blocked.get(0).unwrap().0, child_id);
+        assert_eq!(
+            client
+                .get_operations_by_status(&OperationStatus::Queued)
+                .len(),
+            0
+        );
+
+        // Still Blocked (not Ready) once the child's ETA has passed.
+        env.ledger().with_mut(|l| l.timestamp += 3601);
+        assert_eq!(
+            client.get_operation_status(&child_id),
+            Some(OperationStatus::Blocked)
+        );
+        assert_eq!(
+            client.get_operation_count_by_status(&OperationStatus::Ready),
+            0
+        );
+        assert_eq!(
+            client.get_operation_count_by_status(&OperationStatus::Blocked),
+            1
+        );
+    }
+
+    #[test]
+    fn test_operation_status_blocked_when_dependency_expired() {
+        let (env, admin, client) = setup();
+        let target = Address::generate(&env);
+        let no_deps: Vec<Bytes> = Vec::new(&env);
+        let short_grace: u64 = 3600;
+
+        let parent_id = client.queue(
+            &admin,
+            &String::from_str(&env, "parent"),
+            &target,
+            &3600,
+            &short_grace,
+            &no_deps,
+        );
+        let mut deps = Vec::new(&env);
+        deps.push_back(parent_id.clone());
+        let child_id = client.queue(
+            &admin,
+            &String::from_str(&env, "child"),
+            &target,
+            &3600,
+            &GRACE,
+            &deps,
+        );
+
+        // Parent is left to expire without being cancelled or executed.
+        env.ledger()
+            .with_mut(|l| l.timestamp += 3600 + short_grace + 1);
+
+        assert_eq!(
+            client.get_operation_status(&parent_id),
+            Some(OperationStatus::Expired)
+        );
+        assert!(!client.get_op(&parent_id).unwrap().cancelled);
+        assert_eq!(
+            client.get_operation_status(&child_id),
+            Some(OperationStatus::Blocked)
+        );
+        assert_eq!(
+            client.get_operation_count_by_status(&OperationStatus::Blocked),
+            1
+        );
+        assert_eq!(
+            client.get_operation_count_by_status(&OperationStatus::Ready),
+            0
+        );
+        let blocked = client.get_operations_by_status(&OperationStatus::Blocked);
+        assert_eq!(blocked.len(), 1);
+        assert_eq!(blocked.get(0).unwrap().0, child_id);
+
+        let result = client.try_execute(&admin, &child_id);
+        assert_eq!(result, Err(Ok(TimelockError::DependencyNotExecuted)));
+    }
+
+    #[test]
+    fn test_operation_status_not_blocked_when_dependency_executed() {
+        let (env, admin, client) = setup();
+        let target = Address::generate(&env);
+        let no_deps: Vec<Bytes> = Vec::new(&env);
+        let short_grace: u64 = 3600;
+
+        let parent_id = client.queue(
+            &admin,
+            &String::from_str(&env, "parent"),
+            &target,
+            &3600,
+            &short_grace,
+            &no_deps,
+        );
+        let mut deps = Vec::new(&env);
+        deps.push_back(parent_id.clone());
+        let child_id = client.queue(
+            &admin,
+            &String::from_str(&env, "child"),
+            &target,
+            &3600,
+            &GRACE,
+            &deps,
+        );
+
+        env.ledger().with_mut(|l| l.timestamp += 3601);
+        client.execute(&admin, &parent_id);
+
+        // Parent's grace window passing after execution must not block the child.
+        env.ledger().with_mut(|l| l.timestamp += short_grace);
+        assert_eq!(
+            client.get_operation_status(&child_id),
+            Some(OperationStatus::Ready)
+        );
+        client.execute(&admin, &child_id);
     }
 
     #[test]
