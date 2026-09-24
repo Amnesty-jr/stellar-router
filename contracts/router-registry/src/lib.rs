@@ -74,6 +74,10 @@ pub enum RegistryError {
     /// supplied `health_fn` symbol is not in the allow-list of
     /// conventionally side-effect-free liveness-probe names.
     InvalidHealthFn = 12,
+    /// Returned by [`RouterRegistry::bulk_register`] or
+    /// [`RouterRegistry::deprecate_many`] when `entries` exceeds
+    /// `MAX_BULK_BATCH_SIZE`.
+    BatchTooLarge = 13,
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -95,6 +99,14 @@ const INSTANCE_TTL_THRESHOLD: u32 = 17280 * 30;
 /// Target TTL (in ledgers) applied to instance storage on every entry point.
 /// ~60 days at 5 s/ledger.
 const INSTANCE_TTL_EXTEND_TO: u32 = 17280 * 60;
+
+/// Maximum number of entries accepted by [`RouterRegistry::bulk_register`] or
+/// [`RouterRegistry::deprecate_many`] in a single call, mirroring
+/// `router-multicall`'s `max_batch_size` guard against a batch large enough
+/// to exceed the transaction's CPU/memory instruction budget. Fixed rather
+/// than admin-configurable, since (unlike multicall's arbitrary cross-contract
+/// calls) a registry batch item's cost is uniform and predictable.
+const MAX_BULK_BATCH_SIZE: u32 = 50;
 
 // ── Contract ──────────────────────────────────────────────────────────────────
 
@@ -256,24 +268,45 @@ impl RouterRegistry {
         caller.require_auth();
         router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         router_common::require_admin_simple!(&env, &caller, &DataKey::Admin, RegistryError)?;
+        if entries.len() > MAX_BULK_BATCH_SIZE {
+            return Err(RegistryError::BatchTooLarge);
+        }
         let mut result = router_common::BatchResult::new(&env);
 
         if fail_fast {
+            // Pre-validate every entry against existing storage AND against
+            // entries earlier in this same batch (`seen`) — nothing is
+            // written until the second loop, so validate_registration alone
+            // would not catch two entries in one batch sharing a
+            // (name, version), and the second loop below skips
+            // re-validation entirely (see write_entry's doc comment).
+            let mut seen: Vec<(String, u32)> = Vec::new(&env);
             for (index, entry) in entries.iter().enumerate() {
                 let idx = index as u32;
+                let is_intra_batch_dup = seen
+                    .iter()
+                    .any(|(n, v)| n == entry.name && v == entry.version);
+                if is_intra_batch_dup {
+                    result.record_failure(
+                        idx,
+                        Self::registry_error_to_batch(&env, RegistryError::AlreadyRegistered),
+                    );
+                    return Ok(result);
+                }
                 if let Err(err) = Self::validate_registration(&env, &entry.name, entry.version) {
                     result.record_failure(idx, Self::registry_error_to_batch(&env, err));
                     return Ok(result);
                 }
+                seen.push_back((entry.name.clone(), entry.version));
             }
             for (index, entry) in entries.iter().enumerate() {
-                Self::register_entry(
+                Self::write_entry(
                     &env,
                     &caller,
                     entry.name.clone(),
                     entry.address.clone(),
                     entry.version,
-                )?;
+                );
                 result.record_success(index as u32);
             }
         } else {
@@ -528,16 +561,19 @@ impl RouterRegistry {
     pub fn deprecate_many(
         env: Env,
         caller: Address,
-        entries: Vec<(String, u32)>,
+        entries: Vec<(String, u32, Option<String>)>,
         fail_fast: bool,
     ) -> Result<router_common::BatchResult, RegistryError> {
         caller.require_auth();
         router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         router_common::require_admin_simple!(&env, &caller, &DataKey::Admin, RegistryError)?;
+        if entries.len() > MAX_BULK_BATCH_SIZE {
+            return Err(RegistryError::BatchTooLarge);
+        }
         let mut result = router_common::BatchResult::new(&env);
-        for (index, (name, version)) in entries.iter().enumerate() {
+        for (index, (name, version, reason)) in entries.iter().enumerate() {
             let idx = index as u32;
-            match Self::deprecate_one(&env, name.clone(), version, None) {
+            match Self::deprecate_one(&env, name.clone(), version, reason.clone()) {
                 Ok(()) => result.record_success(idx),
                 Err(err) => {
                     result.record_failure(idx, Self::registry_error_to_batch(&env, err));
@@ -756,7 +792,16 @@ impl RouterRegistry {
         version: u32,
     ) -> Result<(), RegistryError> {
         Self::validate_registration(env, &name, version)?;
+        Self::write_entry(env, caller, name, address, version);
+        Ok(())
+    }
 
+    /// Writes a validated contract entry — callers must have already called
+    /// `validate_registration` for `(name, version)` themselves. Split out of
+    /// `register_entry` so a caller that pre-validates a whole batch (e.g.
+    /// `bulk_register`'s `fail_fast` path) doesn't pay for the same
+    /// `validate_registration` storage reads twice per entry.
+    fn write_entry(env: &Env, caller: &Address, name: String, address: Address, version: u32) {
         let entry = ContractEntry {
             address: address.clone(),
             name: name.clone(),
@@ -797,8 +842,6 @@ impl RouterRegistry {
             (Symbol::new(env, router_common::EVENT_CONTRACT_REGISTERED),),
             (name, version),
         );
-
-        Ok(())
     }
 
     /// Returns `true` when `fn_sym` is in the documented allow-list of
@@ -1293,13 +1336,38 @@ mod tests {
 
         let entries = vec![
             &env,
-            (name.clone(), 1u32),
-            (name.clone(), 2u32),
-            (name.clone(), 3u32),
+            (name.clone(), 1u32, None),
+            (name.clone(), 2u32, None),
+            (name.clone(), 3u32, None),
         ];
         let results = client.deprecate_many(&admin, &entries, &false);
         assert_eq!(results.successes.len(), 3);
         assert_eq!(results.failures.len(), 0);
+    }
+
+    #[test]
+    fn test_deprecate_many_records_per_item_reason() {
+        // Regression test for #1366: deprecate_many previously hardcoded
+        // reason=None, making it impossible to record why in bulk.
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let (a1, a2) = (Address::generate(&env), Address::generate(&env));
+        client.register(&admin, &name, &a1, &1);
+        client.register(&admin, &name, &a2, &2);
+
+        let reason = String::from_str(&env, "security vulnerability");
+        let entries = vec![
+            &env,
+            (name.clone(), 1u32, Some(reason.clone())),
+            (name.clone(), 2u32, None),
+        ];
+        let results = client.deprecate_many(&admin, &entries, &false);
+        assert_eq!(results.successes.len(), 2);
+
+        let entry1 = client.get(&name, &1);
+        assert_eq!(entry1.deprecation_reason, Some(reason));
+        let entry2 = client.get(&name, &2);
+        assert_eq!(entry2.deprecation_reason, None);
     }
 
     #[test]
@@ -1311,9 +1379,9 @@ mod tests {
 
         let entries = vec![
             &env,
-            (name.clone(), 1u32),  // ok
-            (name.clone(), 99u32), // VersionNotFound
-            (name.clone(), 1u32),  // AlreadyDeprecated
+            (name.clone(), 1u32, None),  // ok
+            (name.clone(), 99u32, None), // VersionNotFound
+            (name.clone(), 1u32, None),  // AlreadyDeprecated
         ];
         let results = client.deprecate_many(&admin, &entries, &false);
         assert_eq!(results.successes.len(), 1);
@@ -1441,6 +1509,68 @@ mod tests {
         // Verify no entries were registered
         assert_eq!(client.try_get(&name, &1), Err(Ok(RegistryError::NotFound)));
         assert_eq!(client.try_get(&name, &2), Err(Ok(RegistryError::NotFound)));
+    }
+
+    #[test]
+    fn test_bulk_register_duplicate_within_batch_partial_failure() {
+        // Regression test for #1368: the same (name, version) appearing twice
+        // in one non-fail-fast batch must succeed once and fail once with
+        // AlreadyExists, without corrupting the BatchResult ordering.
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+        let entries = vec![
+            &env,
+            BulkRegistrationInput {
+                name: name.clone(),
+                address: addr.clone(),
+                version: 1,
+            },
+            BulkRegistrationInput {
+                name: name.clone(),
+                address: addr.clone(),
+                version: 1,
+            },
+        ];
+        let result = client.bulk_register(&admin, &entries, &false);
+        assert_eq!(result.successes.len(), 1);
+        assert_eq!(result.successes.get(0).unwrap().index, 0);
+        assert_eq!(result.failures.len(), 1);
+        assert_eq!(result.failures.get(0).unwrap().index, 1);
+        assert_eq!(
+            result.failures.get(0).unwrap().error,
+            router_common::BatchItemError::AlreadyExists
+        );
+    }
+
+    #[test]
+    fn test_bulk_register_batch_too_large_rejected() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let mut entries = Vec::new(&env);
+        for i in 0..(MAX_BULK_BATCH_SIZE + 1) {
+            entries.push_back(BulkRegistrationInput {
+                name: name.clone(),
+                address: Address::generate(&env),
+                version: i + 1,
+            });
+        }
+        let result = client.try_bulk_register(&admin, &entries, &false);
+        assert_eq!(result, Err(Ok(RegistryError::BatchTooLarge)));
+        // Nothing should have been registered.
+        assert_eq!(client.try_get(&name, &1), Err(Ok(RegistryError::NotFound)));
+    }
+
+    #[test]
+    fn test_deprecate_many_batch_too_large_rejected() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let mut entries = Vec::new(&env);
+        for i in 0..(MAX_BULK_BATCH_SIZE + 1) {
+            entries.push_back((name.clone(), i + 1, None));
+        }
+        let result = client.try_deprecate_many(&admin, &entries, &false);
+        assert_eq!(result, Err(Ok(RegistryError::BatchTooLarge)));
     }
 
     #[test]
