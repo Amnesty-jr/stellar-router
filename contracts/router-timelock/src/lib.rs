@@ -145,6 +145,9 @@ impl RouterTimelock {
     const INSTANCE_TTL_EXTEND_TO: u32 = 17280 * 60;
 
     /// Initialize with an admin, minimum delay (seconds), and maximum pending operations limit.
+    ///
+    /// `max_pending_ops == 0` disables the pending-operations cap (unlimited).
+    /// Note this differs from `router-core`'s `set_max_routes`, which rejects 0.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -557,7 +560,9 @@ impl RouterTimelock {
         } else if op
             .eta
             .checked_add(op.grace_period_seconds)
-            .is_some_and(|expiry| now > expiry)
+            // Overflow is treated as expired, consistent with cleanup_expired
+            // and the other status-reporting functions.
+            .is_none_or(|expiry| now > expiry)
         {
             OperationStatus::Expired
         } else if Self::has_blocked_dependency(&env, &op_id) {
@@ -752,6 +757,8 @@ impl RouterTimelock {
     }
 
     /// Get the maximum allowed number of pending operations.
+    ///
+    /// A value of `0` means the pending-operations cap is disabled (unlimited).
     pub fn get_max_pending_ops(env: Env) -> u32 {
         router_common::extend_instance_ttl(
             &env,
@@ -853,12 +860,12 @@ impl RouterTimelock {
         new_admin: Address,
     ) -> Result<(), TimelockError> {
         current.require_auth();
-        router_common::require_admin_simple!(&env, &current, &DataKey::Admin, TimelockError)?;
         router_common::extend_instance_ttl(
             &env,
             Self::INSTANCE_TTL_THRESHOLD,
             Self::INSTANCE_TTL_EXTEND_TO,
         );
+        router_common::require_admin_simple!(&env, &current, &DataKey::Admin, TimelockError)?;
 
         env.storage().instance().set(&DataKey::Admin, &new_admin);
 
@@ -2071,6 +2078,35 @@ mod tests {
     }
 
     #[test]
+    fn test_queue_unlimited_when_max_pending_ops_is_zero() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, RouterTimelock);
+        let client = RouterTimelockClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        // 0 disables the pending-operations cap
+        client.initialize(&admin, &3600, &0);
+        assert_eq!(client.get_max_pending_ops(), 0);
+
+        let target = Address::generate(&env);
+        let deps: Vec<Bytes> = Vec::new(&env);
+
+        for i in 0..25 {
+            let desc = std::format!("op_{}", i);
+            let result = client.try_queue(
+                &admin,
+                &String::from_str(&env, &desc),
+                &target,
+                &3600,
+                &GRACE,
+                &deps,
+            );
+            assert!(result.is_ok(), "queue #{} failed: {:?}", i, result);
+        }
+        assert_eq!(client.get_pending_operations().len(), 25);
+    }
+
+    #[test]
     fn test_queue_fails_when_pending_limit_reached() {
         let env = Env::default();
         env.mock_all_auths();
@@ -2652,6 +2688,37 @@ mod tests {
 
         let op_id = client.queue(&admin, &desc, &target, &3600, &grace, &deps);
         env.ledger().with_mut(|l| l.timestamp += 3600 + grace + 1);
+
+        assert_eq!(
+            client.get_operation_status(&op_id),
+            Some(OperationStatus::Expired)
+        );
+    }
+
+    /// get_operation_status must treat an overflowing eta + grace_period_seconds
+    /// as Expired, matching cleanup_expired and the other status functions.
+    #[test]
+    fn test_get_operation_status_overflowing_expiry_is_expired() {
+        let (env, admin, client) = setup();
+        let target = Address::generate(&env);
+        let desc = String::from_str(&env, "overflow expiry");
+        let op_id = Bytes::from_array(&env, &[0xAB; 32]);
+
+        // queue() rejects such values, so arrange the anomalous stored op directly.
+        env.as_contract(&client.address, || {
+            let op = Op {
+                proposer: admin.clone(),
+                description: desc.clone(),
+                target: target.clone(),
+                eta: u64::MAX,
+                grace_period_seconds: 1,
+                executed: false,
+                cancelled: false,
+            };
+            env.storage()
+                .instance()
+                .set(&DataKey::Op(op_id.clone()), &op);
+        });
 
         assert_eq!(
             client.get_operation_status(&op_id),
