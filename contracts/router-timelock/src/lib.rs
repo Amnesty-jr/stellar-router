@@ -207,7 +207,12 @@ impl RouterTimelock {
             .get(&DataKey::MinDelay)
             .ok_or(TimelockError::NotInitialized)?;
 
-        if min_delay == 0 || delay < min_delay {
+        // `initialize` and `set_min_delay` both reject a zero value before
+        // storing `DataKey::MinDelay`, so a stored MinDelay is guaranteed
+        // non-zero — the `min_delay == 0` disjunct that previously appeared
+        // here was unreachable dead code (mirrors Issue #1207 cleanup in
+        // `set_min_delay`).
+        if delay < min_delay {
             return Err(TimelockError::DelayTooShort);
         }
 
@@ -976,17 +981,23 @@ impl RouterTimelock {
         Ok(())
     }
 
+    /// Fetch the list of dependency IDs for `op_id`, defaulting to an empty
+    /// `Vec` when no entry exists.  This is the single place that knows the
+    /// storage key and the missing-value default, so both
+    /// `require_dependencies_executed` and `has_blocked_dependency` stay in
+    /// sync automatically.
+    fn load_deps(env: &Env, op_id: &Bytes) -> Vec<Bytes> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Deps(op_id.clone()))
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
     /// Require that every dependency recorded for `op_id` (via `DataKey::Deps`)
     /// has itself been executed. A dependency that doesn't exist as an `Op`
     /// (or exists but hasn't executed yet) blocks execution.
     fn require_dependencies_executed(env: &Env, op_id: &Bytes) -> Result<(), TimelockError> {
-        let deps: Vec<Bytes> = env
-            .storage()
-            .instance()
-            .get(&DataKey::Deps(op_id.clone()))
-            .unwrap_or_else(|| Vec::new(env));
-
-        for dep_id in deps.iter() {
+        for dep_id in Self::load_deps(env, op_id).iter() {
             let dep_executed = env
                 .storage()
                 .instance()
@@ -1024,7 +1035,7 @@ impl RouterTimelock {
             .get(&DataKey::Deps(op_id.clone()))
             .unwrap_or_else(|| Vec::new(env));
         let now = env.ledger().timestamp();
-        for dep_id in deps.iter() {
+        for dep_id in Self::load_deps(env, op_id).iter() {
             match env
                 .storage()
                 .instance()
@@ -2982,7 +2993,14 @@ mod tests {
     }
 
     #[test]
-    fn test_queue_circular_dependency_two_ops() {
+    fn test_queue_multi_hop_dependency_succeeds() {
+        // This test verifies that a valid two-hop dependency chain (op1 ← op2)
+        // is accepted by queue(). It does NOT test cycle rejection — a genuine
+        // two-node cycle (op1 depends on op2 AND op2 depends on op1) cannot be
+        // constructed through the public API: deps can only reference already-queued
+        // op_ids, and there is no way to add a dependency to an operation after it
+        // has been queued. The only feasible cycle is a self-dependency (op references
+        // its own predicted id), which is covered by test_queue_circular_dependency_fails.
         let (env, admin, client) = setup();
         let target = Address::generate(&env);
         let delay: u64 = 3600;
@@ -2997,7 +3015,7 @@ mod tests {
             &Vec::new(&env),
         );
 
-        // Try to queue second operation that depends on first
+        // Queue second operation that depends on the first — a valid chain
         let mut deps = Vec::new(&env);
         deps.push_back(op1_id.clone());
 
@@ -3377,5 +3395,113 @@ mod tests {
         // Should execute successfully.
         client.execute(&admin, &op_id);
         assert!(client.get_op(&op_id).unwrap().executed);
+    }
+
+    // ── Issue #1386: execute() on an op whose dependency was cancelled ────────
+
+    /// execute() must return DependencyNotExecuted when a dependency was
+    /// cancelled (not just pending). This covers the Blocked state transition
+    /// that has_blocked_dependency / require_dependencies_executed are
+    /// specifically designed to handle.
+    #[test]
+    fn test_execute_blocked_by_cancelled_dependency_returns_dependency_not_executed() {
+        let (env, admin, client) = setup();
+        let parent_target = Address::generate(&env);
+        let child_target = Address::generate(&env);
+        let no_deps: Vec<Bytes> = Vec::new(&env);
+
+        // Queue the parent operation.
+        let parent_id = client.queue(
+            &admin,
+            &String::from_str(&env, "register adapter"),
+            &parent_target,
+            &3600,
+            &GRACE,
+            &no_deps,
+        );
+
+        // Queue the child that depends on the parent.
+        let mut deps = Vec::new(&env);
+        deps.push_back(parent_id.clone());
+        let child_id = client.queue(
+            &admin,
+            &String::from_str(&env, "upgrade adapter"),
+            &child_target,
+            &3600,
+            &GRACE,
+            &deps,
+        );
+
+        // Cancel the parent — the child's dependency can never be executed.
+        client.cancel(&admin, &parent_id);
+
+        // Advance time past the child's ETA so it would otherwise be Ready.
+        env.ledger().with_mut(|l| l.timestamp += 3601);
+
+        // The child is permanently Blocked; execute must return DependencyNotExecuted.
+        let result = client.try_execute(&admin, &child_id);
+        assert_eq!(result, Err(Ok(TimelockError::DependencyNotExecuted)));
+
+        // Status must reflect Blocked, not Ready.
+        assert_eq!(
+            client.get_operation_status(&child_id),
+            Some(OperationStatus::Blocked)
+        );
+    }
+
+    /// Confirms the blocked state is permanent: even after additional time
+    /// passes, execute() continues to return DependencyNotExecuted and the
+    /// status remains Blocked (within the grace period).
+    #[test]
+    fn test_execute_blocked_by_cancelled_dependency_is_permanent() {
+        let (env, admin, client) = setup();
+        let parent_target = Address::generate(&env);
+        let child_target = Address::generate(&env);
+        let no_deps: Vec<Bytes> = Vec::new(&env);
+
+        let parent_id = client.queue(
+            &admin,
+            &String::from_str(&env, "register adapter"),
+            &parent_target,
+            &3600,
+            &GRACE,
+            &no_deps,
+        );
+
+        let mut deps = Vec::new(&env);
+        deps.push_back(parent_id.clone());
+        let child_id = client.queue(
+            &admin,
+            &String::from_str(&env, "upgrade adapter"),
+            &child_target,
+            &3600,
+            &GRACE,
+            &deps,
+        );
+
+        // Cancel the parent before it is executed.
+        client.cancel(&admin, &parent_id);
+
+        // First check: right after the child's ETA.
+        env.ledger().with_mut(|l| l.timestamp += 3601);
+        assert_eq!(
+            client.try_execute(&admin, &child_id),
+            Err(Ok(TimelockError::DependencyNotExecuted))
+        );
+        assert_eq!(
+            client.get_operation_status(&child_id),
+            Some(OperationStatus::Blocked)
+        );
+
+        // Second check: well into the grace period — still permanently blocked.
+        env.ledger().with_mut(|l| l.timestamp += GRACE / 2);
+        assert_eq!(
+            client.try_execute(&admin, &child_id),
+            Err(Ok(TimelockError::DependencyNotExecuted))
+        );
+        assert_eq!(
+            client.get_operation_status(&child_id),
+            Some(OperationStatus::Blocked)
+        );
     }
 }
