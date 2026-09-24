@@ -1000,11 +1000,24 @@ impl RouterTimelock {
         Ok(())
     }
 
-    /// Returns `true` if any direct dependency of `op_id` can never be
-    /// executed — it was cancelled, it expired without executing, or its
-    /// storage no longer exists — meaning this operation can never execute
-    /// either (`require_dependencies_executed` will always fail).
+    /// Returns `true` if any dependency of `op_id`, direct or transitive, can
+    /// never be executed — it was cancelled, it expired without executing,
+    /// its storage no longer exists, or it is itself blocked by one of *its*
+    /// dependencies — meaning this operation can never execute either
+    /// (`require_dependencies_executed` will always fail). Recursion is
+    /// bounded by `MAX_DEPENDENCY_DEPTH`, mirroring `check_dependency_depth`.
     fn has_blocked_dependency(env: &Env, op_id: &Bytes) -> bool {
+        Self::has_blocked_dependency_at_depth(env, op_id, 0)
+    }
+
+    fn has_blocked_dependency_at_depth(env: &Env, op_id: &Bytes, depth: u32) -> bool {
+        if depth > Self::MAX_DEPENDENCY_DEPTH {
+            // Depth is already bounded on the way in by `check_dependency_depth`
+            // at queue time, so this is a defensive backstop, not the primary
+            // guard — treat an implausibly deep chain as blocked rather than
+            // recursing further.
+            return true;
+        }
         let deps: Vec<Bytes> = env
             .storage()
             .instance()
@@ -1015,10 +1028,14 @@ impl RouterTimelock {
             match env
                 .storage()
                 .instance()
-                .get::<DataKey, Op>(&DataKey::Op(dep_id))
+                .get::<DataKey, Op>(&DataKey::Op(dep_id.clone()))
             {
                 Some(dep_op) => {
-                    if dep_op.cancelled || (!dep_op.executed && Self::is_expired(&dep_op, now)) {
+                    if dep_op.cancelled
+                        || (!dep_op.executed && Self::is_expired(&dep_op, now))
+                        || (!dep_op.executed
+                            && Self::has_blocked_dependency_at_depth(env, &dep_id, depth + 1))
+                    {
                         return true;
                     }
                 }
@@ -2683,6 +2700,66 @@ mod tests {
         assert_eq!(
             client.get_operation_count_by_status(&OperationStatus::Blocked),
             1
+        );
+    }
+
+    #[test]
+    fn test_operation_status_blocked_transitively_through_grandparent() {
+        // A <- B <- C: only A (the root) is cancelled. B is never itself
+        // cancelled, just permanently unexecutable — has_blocked_dependency
+        // must walk the chain transitively so C is reported Blocked too,
+        // not Ready/Queued (regression test for #1372).
+        let (env, admin, client) = setup();
+        let target = Address::generate(&env);
+        let no_deps: Vec<Bytes> = Vec::new(&env);
+
+        let op_a = client.queue(
+            &admin,
+            &String::from_str(&env, "a"),
+            &target,
+            &3600,
+            &GRACE,
+            &no_deps,
+        );
+
+        let mut deps_b = Vec::new(&env);
+        deps_b.push_back(op_a.clone());
+        let op_b = client.queue(
+            &admin,
+            &String::from_str(&env, "b"),
+            &target,
+            &3600,
+            &GRACE,
+            &deps_b,
+        );
+
+        let mut deps_c = Vec::new(&env);
+        deps_c.push_back(op_b.clone());
+        let op_c = client.queue(
+            &admin,
+            &String::from_str(&env, "c"),
+            &target,
+            &3600,
+            &GRACE,
+            &deps_c,
+        );
+
+        client.cancel(&admin, &op_a);
+
+        // B is directly blocked (its own dependency, A, was cancelled).
+        assert_eq!(
+            client.get_operation_status(&op_b),
+            Some(OperationStatus::Blocked)
+        );
+        // C's only direct dependency is B, which was never cancelled itself —
+        // this is exactly the case the transitive walk must catch.
+        assert_eq!(
+            client.get_operation_status(&op_c),
+            Some(OperationStatus::Blocked)
+        );
+        assert_eq!(
+            client.get_operation_count_by_status(&OperationStatus::Blocked),
+            2
         );
     }
 

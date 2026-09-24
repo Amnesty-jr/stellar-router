@@ -15,6 +15,7 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 ### Changed
 - Documentation: added a top-level `CHANGELOG.md` following Keep a Changelog format.
+- **BREAKING:** `router-registry`: `register_with_check`'s parameter order changed from `(env, caller, name, version, address, health_fn)` to `(env, caller, name, address, version, health_fn)`, matching `register`'s existing `(name, address, version)` order. Previously `register_with_check` transposed `address` and `version` relative to `register`, despite being documented as behaving identically plus one trailing argument — a footgun for any caller/binding that passes arguments positionally. Update all call sites accordingly.
 
 ### Security
 - `router-registry`: `register_with_check` now restricts `health_fn` to a fixed allow-list of conventionally side-effect-free symbols — `health` or `ping` — and rejects any other symbol with the new `InvalidHealthFn` error *before* dispatching any cross-contract call. Previously, `try_invoke_contract` was invoked on the target address with an arbitrary admin-supplied symbol, allowing an admin (operator error, compromised key, or misleading naming on the target) to trigger state-mutating entry points on the registered contract during what was meant to be a passive liveness probe. The doc comment on `register_with_check` is updated with explicit security notes covering the invariant.
