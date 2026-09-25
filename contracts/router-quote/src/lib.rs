@@ -212,6 +212,7 @@ impl RouterQuote {
     /// # Errors
     /// * [`QuoteError::Unauthorized`] — if caller is not the admin.
     /// * [`QuoteError::InvalidFeeBps`] — if fee_bps > 10000.
+    /// * [`QuoteError::TooManyRoutes`] — if the configured-routes index is full ([`MAX_TRACKED_ROUTES`]).
     pub fn set_route_fee(
         env: Env,
         caller: Address,
@@ -298,8 +299,10 @@ impl RouterQuote {
     ///
     /// # Errors
     /// * [`QuoteError::Unauthorized`] — if caller is not the admin.
+    /// * [`QuoteError::TooManyTiers`] — if tiers.len() exceeds [`MAX_FEE_TIERS_PER_ROUTE`].
     /// * [`QuoteError::InvalidFeeTier`] — if any tier has a negative `min_amount`.
     /// * [`QuoteError::InvalidFeeBps`] — if any tier's `fee_bps` > 10000.
+    /// * [`QuoteError::TooManyRoutes`] — if the configured-routes index is full ([`MAX_TRACKED_ROUTES`]).
     pub fn set_route_fee_tiers(
         env: Env,
         caller: Address,
@@ -432,6 +435,7 @@ impl RouterQuote {
     /// [`QuoteResponse`] with calculated amounts and fees.
     ///
     /// # Errors
+    /// * [`QuoteError::NotInitialized`] — if the contract has not been initialized.
     /// * [`QuoteError::InvalidAmount`] — if amount_in <= 0.
     /// * [`QuoteError::ArithmeticOverflow`] — if the fee or output calculation overflows.
     pub fn get_quote(env: Env, request: QuoteRequest) -> Result<QuoteResponse, QuoteError> {
@@ -485,6 +489,7 @@ impl RouterQuote {
     /// Vector of [`QuoteResponse`] for each request.
     ///
     /// # Errors
+    /// * [`QuoteError::NotInitialized`] — if the contract has not been initialized.
     /// * [`QuoteError::NoQuotesProvided`] — if requests vector is empty.
     /// * [`QuoteError::InvalidAmount`] — if any amount_in <= 0.
     /// * [`QuoteError::ArithmeticOverflow`] — if any request's fee/output calculation overflows.
@@ -519,6 +524,7 @@ impl RouterQuote {
     /// The [`QuoteResponse`] with the highest amount_out.
     ///
     /// # Errors
+    /// * [`QuoteError::NotInitialized`] — if the contract has not been initialized.
     /// * [`QuoteError::NoQuotesProvided`] — if requests vector is empty.
     /// * [`QuoteError::InvalidAmount`] — if any amount_in <= 0.
     /// * [`QuoteError::ArithmeticOverflow`] — if any request's fee/output calculation overflows.
@@ -1223,6 +1229,60 @@ mod tests {
     }
 
     #[test]
+    fn test_get_best_quote_tie_breaks_to_first_route() {
+        let (env, admin, client) = setup();
+
+        let route1 = String::from_str(&env, "route-a");
+        let route2 = String::from_str(&env, "route-b");
+        // Set identical fees so amount_out ties
+        client.set_route_fee(&admin, &route1, &30);
+        client.set_route_fee(&admin, &route2, &30);
+
+        let token_in = Address::generate(&env);
+        let token_out = Address::generate(&env);
+
+        let mut requests = Vec::new(&env);
+        requests.push_back(QuoteRequest {
+            route: route1.clone(),
+            token_in: token_in.clone(),
+            token_out: token_out.clone(),
+            amount_in: 10000,
+        });
+        requests.push_back(QuoteRequest {
+            route: route2.clone(),
+            token_in: token_in.clone(),
+            token_out: token_out.clone(),
+            amount_in: 10000,
+        });
+
+        let best = client.get_best_quote(&requests);
+        // First encountered route wins tie
+        assert_eq!(best.route, route1);
+        assert_eq!(best.amount_out, 9970);
+        assert_eq!(best.fee_bps, 30);
+
+        // When order is reversed, route2 should win
+        let mut reversed_requests = Vec::new(&env);
+        reversed_requests.push_back(QuoteRequest {
+            route: route2.clone(),
+            token_in: token_in.clone(),
+            token_out: token_out.clone(),
+            amount_in: 10000,
+        });
+        reversed_requests.push_back(QuoteRequest {
+            route: route1.clone(),
+            token_in: token_in.clone(),
+            token_out: token_out.clone(),
+            amount_in: 10000,
+        });
+
+        let best_reversed = client.get_best_quote(&reversed_requests);
+        assert_eq!(best_reversed.route, route2);
+        assert_eq!(best_reversed.amount_out, 9970);
+        assert_eq!(best_reversed.fee_bps, 30);
+    }
+
+    #[test]
     fn test_get_best_quote_empty_fails() {
         let (env, _admin, client) = setup();
         let requests = Vec::new(&env);
@@ -1527,5 +1587,28 @@ mod tests {
         let existing = String::from_str(&env, "route-0");
         client.set_route_fee(&admin, &existing, &20);
         assert_eq!(client.get_route_fee(&existing), 20);
+    }
+
+    #[test]
+    fn test_set_route_fee_tiers_rejects_route_beyond_max_tracked_routes() {
+        let (env, admin, client) = setup();
+        env.budget().reset_unlimited();
+
+        let tiers = vec![
+            &env,
+            FeeTier {
+                min_amount: 0,
+                fee_bps: 10,
+            },
+        ];
+
+        for i in 0..MAX_TRACKED_ROUTES {
+            let route = String::from_str(&env, &format!("route-{}", i));
+            client.set_route_fee_tiers(&admin, &route, &tiers);
+        }
+
+        let one_too_many = String::from_str(&env, "one-too-many");
+        let result = client.try_set_route_fee_tiers(&admin, &one_too_many, &tiers);
+        assert_eq!(result, Err(Ok(QuoteError::TooManyRoutes)));
     }
 }
