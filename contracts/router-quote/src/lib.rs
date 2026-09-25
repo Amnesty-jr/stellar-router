@@ -359,8 +359,16 @@ impl RouterQuote {
 
     /// Get the configured fee tiers for a route.
     ///
-    /// Returns an error if the contract has not been initialized.
-    /// If the route has no configured tiers, returns an empty vector.
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `route` - The route name.
+    ///
+    /// # Returns
+    /// The route's [`FeeTier`] list, sorted ascending by `min_amount`. Returns an
+    /// empty vector if the route has no configured tiers.
+    ///
+    /// # Errors
+    /// * [`QuoteError::NotInitialized`] — if the contract has not been initialized.
     pub fn get_route_fee_tiers(env: Env, route: String) -> Result<Vec<FeeTier>, QuoteError> {
         // Verify contract is initialized by checking Admin key exists
         env.storage()
