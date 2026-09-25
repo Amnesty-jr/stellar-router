@@ -374,8 +374,16 @@ impl RouterQuote {
 
     /// Get the configured fee tiers for a route.
     ///
-    /// Returns an error if the contract has not been initialized.
-    /// If the route has no configured tiers, returns an empty vector.
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `route` - The route name.
+    ///
+    /// # Returns
+    /// The route's [`FeeTier`] list, sorted ascending by `min_amount`. Returns an
+    /// empty vector if the route has no configured tiers.
+    ///
+    /// # Errors
+    /// * [`QuoteError::NotInitialized`] — if the contract has not been initialized.
     pub fn get_route_fee_tiers(env: Env, route: String) -> Result<Vec<FeeTier>, QuoteError> {
         router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         // Verify contract is initialized by checking Admin key exists
@@ -453,11 +461,10 @@ impl RouterQuote {
             .and_then(|v| v.checked_div(BPS_DENOMINATOR as i128))
             .ok_or(QuoteError::ArithmeticOverflow)?;
 
-        // Calculate output: amount_out = amount_in - fee_amount
-        let amount_out = request
-            .amount_in
-            .checked_sub(fee_amount)
-            .ok_or(QuoteError::ArithmeticOverflow)?;
+        // Calculate output: amount_out = amount_in - fee_amount.
+        // Guaranteed not to underflow since fee_bps <= BPS_DENOMINATOR ensures fee_amount <= amount_in.
+        debug_assert!(fee_amount <= request.amount_in);
+        let amount_out = request.amount_in - fee_amount;
 
         let response = QuoteResponse {
             route: request.route.clone(),
@@ -1075,6 +1082,27 @@ mod tests {
     }
 
     #[test]
+    fn test_get_quote_with_explicit_zero_fee() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "uniswap");
+        client.set_route_fee(&admin, &route, &0);
+
+        let token_in = Address::generate(&env);
+        let token_out = Address::generate(&env);
+        let amount_in = 1_000_000;
+        let request = QuoteRequest {
+            route,
+            token_in,
+            token_out,
+            amount_in,
+        };
+
+        let response = client.get_quote(&request);
+        assert_eq!(response.fee_amount, 0);
+        assert_eq!(response.amount_out, amount_in);
+    }
+
+    #[test]
     fn test_get_quote_full_fee_takes_entire_amount() {
         let (env, admin, client) = setup();
         let route = String::from_str(&env, "uniswap");
@@ -1396,8 +1424,21 @@ mod tests {
         let aerodrome = String::from_str(&env, "aerodrome");
         client.set_route_fee(&admin, &aerodrome, &50); // 0.5%
 
+        let curve = String::from_str(&env, "curve");
+        client.set_route_fee(&admin, &curve, &100); // flat fee: 100 bps
+        let mut curve_tiers = Vec::new(&env);
+        curve_tiers.push_back(FeeTier {
+            min_amount: 1000,
+            fee_bps: 25,
+        });
+        curve_tiers.push_back(FeeTier {
+            min_amount: 5000,
+            fee_bps: 15,
+        });
+        client.set_route_fee_tiers(&admin, &curve, &curve_tiers);
+
         let all_configured_routes = client.get_all_configured_routes();
-        assert_eq!(all_configured_routes.len(), 4);
+        assert_eq!(all_configured_routes.len(), 5);
         assert_eq!(
             all_configured_routes.get(0).unwrap().0,
             String::from_str(&env, "uniswap")
@@ -1418,6 +1459,11 @@ mod tests {
             String::from_str(&env, "aerodrome")
         );
         assert_eq!(all_configured_routes.get(3).unwrap().1, 50);
+        assert_eq!(
+            all_configured_routes.get(4).unwrap().0,
+            String::from_str(&env, "curve")
+        );
+        assert_eq!(all_configured_routes.get(4).unwrap().1, 25);
     }
 
     #[test]
