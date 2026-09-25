@@ -1048,6 +1048,27 @@ mod tests {
     }
 
     #[test]
+    fn test_get_quote_with_explicit_zero_fee() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "uniswap");
+        client.set_route_fee(&admin, &route, &0);
+
+        let token_in = Address::generate(&env);
+        let token_out = Address::generate(&env);
+        let amount_in = 1_000_000;
+        let request = QuoteRequest {
+            route,
+            token_in,
+            token_out,
+            amount_in,
+        };
+
+        let response = client.get_quote(&request);
+        assert_eq!(response.fee_amount, 0);
+        assert_eq!(response.amount_out, amount_in);
+    }
+
+    #[test]
     fn test_get_quote_full_fee_takes_entire_amount() {
         let (env, admin, client) = setup();
         let route = String::from_str(&env, "uniswap");
