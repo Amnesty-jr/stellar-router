@@ -855,13 +855,14 @@ impl RouterRegistry {
                 .set(&DataKey::ContractNames, &names);
         }
 
-        env.storage()
-            .instance()
-            .set(&DataKey::AddressIndex(address), &(name.clone(), version));
+        env.storage().instance().set(
+            &DataKey::AddressIndex(address.clone()),
+            &(name.clone(), version),
+        );
 
         env.events().publish(
             (Symbol::new(env, router_common::EVENT_CONTRACT_REGISTERED),),
-            (name, version),
+            (name, version, address),
         );
     }
 
@@ -1275,9 +1276,10 @@ mod tests {
                 Symbol::new(&env, "contract_registered").into_val(&env)
             ]
         );
-        let (n, v): (String, u32) = event.2.into_val(&env);
+        let (n, v, a): (String, u32, Address) = event.2.into_val(&env);
         assert_eq!(n, name);
         assert_eq!(v, 1u32);
+        assert_eq!(a, addr);
     }
 
     #[test]
