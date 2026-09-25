@@ -1336,8 +1336,21 @@ mod tests {
         let aerodrome = String::from_str(&env, "aerodrome");
         client.set_route_fee(&admin, &aerodrome, &50); // 0.5%
 
+        let curve = String::from_str(&env, "curve");
+        client.set_route_fee(&admin, &curve, &100); // flat fee: 100 bps
+        let mut curve_tiers = Vec::new(&env);
+        curve_tiers.push_back(FeeTier {
+            min_amount: 1000,
+            fee_bps: 25,
+        });
+        curve_tiers.push_back(FeeTier {
+            min_amount: 5000,
+            fee_bps: 15,
+        });
+        client.set_route_fee_tiers(&admin, &curve, &curve_tiers);
+
         let all_configured_routes = client.get_all_configured_routes();
-        assert_eq!(all_configured_routes.len(), 4);
+        assert_eq!(all_configured_routes.len(), 5);
         assert_eq!(
             all_configured_routes.get(0).unwrap().0,
             String::from_str(&env, "uniswap")
@@ -1358,6 +1371,11 @@ mod tests {
             String::from_str(&env, "aerodrome")
         );
         assert_eq!(all_configured_routes.get(3).unwrap().1, 50);
+        assert_eq!(
+            all_configured_routes.get(4).unwrap().0,
+            String::from_str(&env, "curve")
+        );
+        assert_eq!(all_configured_routes.get(4).unwrap().1, 25);
     }
 
     #[test]
