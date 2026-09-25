@@ -35,7 +35,7 @@ All smart contracts in the stellar-router suite follow a consistent event naming
 
 ### router-registry
 - `contract_registered` — (contract_name, version)
-- `contract_deprecated` — (contract_name, version)
+- `contract_deprecated` — (contract_name, version, reason)
 - `admin_transferred` — (old_admin, new_admin)
 
 ### router-access

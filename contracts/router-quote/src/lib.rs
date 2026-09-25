@@ -3,12 +3,11 @@
 //! # router-quote
 //!
 //! Quote calculation and route comparison for the stellar-router suite.
-//! Provides configurable fee-based quote calculations and best-route selection
-//! with support for multi-hop routes across fee tiers.
+//! Provides configurable fee-based quote calculations and best-route selection.
 //!
 //! ## Features
 //! - Configurable fee basis points (fee_bps) per route
-//! - Multi-hop route support with per-hop fee tier configuration
+//! - Per-route tiered fee schedules (FeeTier) selected by input amount
 //! - Multiple quote comparison
 //! - Best quote selection based on highest output amount
 
@@ -132,6 +131,14 @@ const MAX_TRACKED_ROUTES: u32 = 500;
 /// limit is reached to prevent unbounded storage growth and O(n²) insertion-sort overhead.
 const MAX_FEE_TIERS_PER_ROUTE: u32 = 100;
 
+/// Minimum remaining TTL (in ledgers) before instance storage is extended.
+/// ~30 days at 5 s/ledger.
+const INSTANCE_TTL_THRESHOLD: u32 = 17280 * 30;
+
+/// Target TTL (in ledgers) applied to instance storage on every entry point.
+/// ~60 days at 5 s/ledger.
+const INSTANCE_TTL_EXTEND_TO: u32 = 17280 * 60;
+
 #[contract]
 pub struct RouterQuote;
 
@@ -166,6 +173,7 @@ impl RouterQuote {
     /// * [`QuoteError::AlreadyInitialized`] — if already initialized.
     /// * [`QuoteError::InvalidFeeBps`] — if fee_bps > 10000.
     pub fn initialize(env: Env, admin: Address, default_fee_bps: u32) -> Result<(), QuoteError> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(QuoteError::AlreadyInitialized);
         }
@@ -204,6 +212,7 @@ impl RouterQuote {
     /// # Errors
     /// * [`QuoteError::Unauthorized`] — if caller is not the admin.
     /// * [`QuoteError::InvalidFeeBps`] — if fee_bps > 10000.
+    /// * [`QuoteError::TooManyRoutes`] — if the configured-routes index is full ([`MAX_TRACKED_ROUTES`]).
     pub fn set_route_fee(
         env: Env,
         caller: Address,
@@ -211,6 +220,7 @@ impl RouterQuote {
         fee_bps: u32,
     ) -> Result<(), QuoteError> {
         caller.require_auth();
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         router_common::require_admin_simple!(&env, &caller, &DataKey::Admin, QuoteError)?;
 
         if fee_bps > BPS_DENOMINATOR {
@@ -249,6 +259,7 @@ impl RouterQuote {
     /// * [`QuoteError::Unauthorized`] — if caller is not the admin.
     pub fn unset_route_fee(env: Env, caller: Address, route: String) -> Result<(), QuoteError> {
         caller.require_auth();
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         router_common::require_admin_simple!(&env, &caller, &DataKey::Admin, QuoteError)?;
 
         env.storage()
@@ -288,6 +299,7 @@ impl RouterQuote {
     ///
     /// # Errors
     /// * [`QuoteError::Unauthorized`] — if caller is not the admin.
+    /// * [`QuoteError::TooManyTiers`] — if tiers.len() exceeds [`MAX_FEE_TIERS_PER_ROUTE`].
     /// * [`QuoteError::InvalidFeeTier`] — if any tier has a negative `min_amount`.
     /// * [`QuoteError::InvalidFeeBps`] — if any tier's `fee_bps` > 10000.
     ///
@@ -295,6 +307,7 @@ impl RouterQuote {
     /// Passing an empty `tiers` vector clears any previously-configured tier
     /// schedule for the route. After clearing, quotes for the route fall back
     /// to the flat route fee (if any) or the default fee.
+    /// * [`QuoteError::TooManyRoutes`] — if the configured-routes index is full ([`MAX_TRACKED_ROUTES`]).
     pub fn set_route_fee_tiers(
         env: Env,
         caller: Address,
@@ -302,6 +315,7 @@ impl RouterQuote {
         tiers: Vec<FeeTier>,
     ) -> Result<(), QuoteError> {
         caller.require_auth();
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         router_common::require_admin_simple!(&env, &caller, &DataKey::Admin, QuoteError)?;
 
         // Validate tier count to prevent unbounded storage growth
@@ -352,6 +366,7 @@ impl RouterQuote {
     /// # Errors
     /// * [`QuoteError::NotInitialized`] — if the contract has not been initialized.
     pub fn get_route_fee(env: Env, route: String) -> Result<u32, QuoteError> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         match env
             .storage()
             .instance()
@@ -364,9 +379,18 @@ impl RouterQuote {
 
     /// Get the configured fee tiers for a route.
     ///
-    /// Returns an error if the contract has not been initialized.
-    /// If the route has no configured tiers, returns an empty vector.
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `route` - The route name.
+    ///
+    /// # Returns
+    /// The route's [`FeeTier`] list, sorted ascending by `min_amount`. Returns an
+    /// empty vector if the route has no configured tiers.
+    ///
+    /// # Errors
+    /// * [`QuoteError::NotInitialized`] — if the contract has not been initialized.
     pub fn get_route_fee_tiers(env: Env, route: String) -> Result<Vec<FeeTier>, QuoteError> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         // Verify contract is initialized by checking Admin key exists
         env.storage()
             .instance()
@@ -380,23 +404,24 @@ impl RouterQuote {
             .ok_or(QuoteError::NotInitialized)
     }
 
-    /// Get all configured router fee.
+    /// Get all configured routes and their effective fees.
     ///
-    /// Returns a vector of route_name and fee_bps.
+    /// Returns a vector of (route_name, fee_bps) pairs.
     ///
     /// # Arguments
     /// * `env` - The Soroban environment.
     ///
     /// # Returns
-    /// Router name and Fee in basis points.
+    /// A vector of (route_name, fee_bps) pairs.
     pub fn get_all_configured_routes(env: Env) -> Vec<(String, u32)> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         let routes = Self::read_configured_routes(&env);
         let mut configured_routes = Vec::new(&env);
 
         for route in routes {
             let tiers = match Self::get_route_fee_tiers(env.clone(), route.clone()) {
                 Ok(t) => t,
-                Err(_) => Vec::new(&env), // If not initialized, skip this route
+                Err(_) => Vec::new(&env), // Treat an uninitialized/errored tier lookup as "no tiers"; the route is only skipped below if the flat-fee fallback also fails
             };
             let fee = if let Some(lowest) = tiers.get(0) {
                 lowest.fee_bps
@@ -423,6 +448,7 @@ impl RouterQuote {
     /// [`QuoteResponse`] with calculated amounts and fees.
     ///
     /// # Errors
+    /// * [`QuoteError::NotInitialized`] — if the contract has not been initialized.
     /// * [`QuoteError::InvalidAmount`] — if amount_in <= 0.
     /// * [`QuoteError::ArithmeticOverflow`] — if the fee or output calculation overflows.
     pub fn get_quote(env: Env, request: QuoteRequest) -> Result<QuoteResponse, QuoteError> {
@@ -440,11 +466,10 @@ impl RouterQuote {
             .and_then(|v| v.checked_div(BPS_DENOMINATOR as i128))
             .ok_or(QuoteError::ArithmeticOverflow)?;
 
-        // Calculate output: amount_out = amount_in - fee_amount
-        let amount_out = request
-            .amount_in
-            .checked_sub(fee_amount)
-            .ok_or(QuoteError::ArithmeticOverflow)?;
+        // Calculate output: amount_out = amount_in - fee_amount.
+        // Guaranteed not to underflow since fee_bps <= BPS_DENOMINATOR ensures fee_amount <= amount_in.
+        debug_assert!(fee_amount <= request.amount_in);
+        let amount_out = request.amount_in - fee_amount;
 
         let response = QuoteResponse {
             route: request.route.clone(),
@@ -476,6 +501,7 @@ impl RouterQuote {
     /// Vector of [`QuoteResponse`] for each request.
     ///
     /// # Errors
+    /// * [`QuoteError::NotInitialized`] — if the contract has not been initialized.
     /// * [`QuoteError::NoQuotesProvided`] — if requests vector is empty.
     /// * [`QuoteError::InvalidAmount`] — if any amount_in <= 0.
     /// * [`QuoteError::ArithmeticOverflow`] — if any request's fee/output calculation overflows.
@@ -510,6 +536,7 @@ impl RouterQuote {
     /// The [`QuoteResponse`] with the highest amount_out.
     ///
     /// # Errors
+    /// * [`QuoteError::NotInitialized`] — if the contract has not been initialized.
     /// * [`QuoteError::NoQuotesProvided`] — if requests vector is empty.
     /// * [`QuoteError::InvalidAmount`] — if any amount_in <= 0.
     /// * [`QuoteError::ArithmeticOverflow`] — if any request's fee/output calculation overflows.
@@ -592,6 +619,7 @@ impl RouterQuote {
     /// * [`QuoteError::InvalidFeeBps`] — if fee_bps > 10000.
     pub fn set_default_fee(env: Env, caller: Address, fee_bps: u32) -> Result<(), QuoteError> {
         caller.require_auth();
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         router_common::require_admin_simple!(&env, &caller, &DataKey::Admin, QuoteError)?;
 
         if fee_bps > BPS_DENOMINATOR {
@@ -624,6 +652,7 @@ impl RouterQuote {
     /// # Errors
     /// * [`QuoteError::NotInitialized`] — if the contract has not been initialized.
     pub fn get_default_fee(env: Env) -> Result<u32, QuoteError> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         env.storage()
             .instance()
             .get(&DataKey::DefaultFee)
@@ -641,6 +670,7 @@ impl RouterQuote {
     /// # Errors
     /// * [`QuoteError::NotInitialized`] — if the contract has not been initialized.
     pub fn admin(env: Env) -> Result<Address, QuoteError> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         env.storage()
             .instance()
             .get(&DataKey::Admin)
@@ -665,6 +695,7 @@ impl RouterQuote {
         new_admin: Address,
     ) -> Result<(), QuoteError> {
         current.require_auth();
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         router_common::require_admin_simple!(&env, &current, &DataKey::Admin, QuoteError)?;
         env.storage().instance().set(&DataKey::Admin, &new_admin);
 
@@ -710,6 +741,8 @@ impl RouterQuote {
             for tier in tiers.iter() {
                 if amount_in >= tier.min_amount {
                     matching_fee = Some(tier.fee_bps);
+                } else {
+                    break;
                 }
             }
             if let Some(fee) = matching_fee {
@@ -1095,6 +1128,27 @@ mod tests {
     }
 
     #[test]
+    fn test_get_quote_with_explicit_zero_fee() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "uniswap");
+        client.set_route_fee(&admin, &route, &0);
+
+        let token_in = Address::generate(&env);
+        let token_out = Address::generate(&env);
+        let amount_in = 1_000_000;
+        let request = QuoteRequest {
+            route,
+            token_in,
+            token_out,
+            amount_in,
+        };
+
+        let response = client.get_quote(&request);
+        assert_eq!(response.fee_amount, 0);
+        assert_eq!(response.amount_out, amount_in);
+    }
+
+    #[test]
     fn test_get_quote_full_fee_takes_entire_amount() {
         let (env, admin, client) = setup();
         let route = String::from_str(&env, "uniswap");
@@ -1249,6 +1303,60 @@ mod tests {
     }
 
     #[test]
+    fn test_get_best_quote_tie_breaks_to_first_route() {
+        let (env, admin, client) = setup();
+
+        let route1 = String::from_str(&env, "route-a");
+        let route2 = String::from_str(&env, "route-b");
+        // Set identical fees so amount_out ties
+        client.set_route_fee(&admin, &route1, &30);
+        client.set_route_fee(&admin, &route2, &30);
+
+        let token_in = Address::generate(&env);
+        let token_out = Address::generate(&env);
+
+        let mut requests = Vec::new(&env);
+        requests.push_back(QuoteRequest {
+            route: route1.clone(),
+            token_in: token_in.clone(),
+            token_out: token_out.clone(),
+            amount_in: 10000,
+        });
+        requests.push_back(QuoteRequest {
+            route: route2.clone(),
+            token_in: token_in.clone(),
+            token_out: token_out.clone(),
+            amount_in: 10000,
+        });
+
+        let best = client.get_best_quote(&requests);
+        // First encountered route wins tie
+        assert_eq!(best.route, route1);
+        assert_eq!(best.amount_out, 9970);
+        assert_eq!(best.fee_bps, 30);
+
+        // When order is reversed, route2 should win
+        let mut reversed_requests = Vec::new(&env);
+        reversed_requests.push_back(QuoteRequest {
+            route: route2.clone(),
+            token_in: token_in.clone(),
+            token_out: token_out.clone(),
+            amount_in: 10000,
+        });
+        reversed_requests.push_back(QuoteRequest {
+            route: route1.clone(),
+            token_in: token_in.clone(),
+            token_out: token_out.clone(),
+            amount_in: 10000,
+        });
+
+        let best_reversed = client.get_best_quote(&reversed_requests);
+        assert_eq!(best_reversed.route, route2);
+        assert_eq!(best_reversed.amount_out, 9970);
+        assert_eq!(best_reversed.fee_bps, 30);
+    }
+
+    #[test]
     fn test_get_best_quote_empty_fails() {
         let (env, _admin, client) = setup();
         let requests = Vec::new(&env);
@@ -1362,8 +1470,21 @@ mod tests {
         let aerodrome = String::from_str(&env, "aerodrome");
         client.set_route_fee(&admin, &aerodrome, &50); // 0.5%
 
+        let curve = String::from_str(&env, "curve");
+        client.set_route_fee(&admin, &curve, &100); // flat fee: 100 bps
+        let mut curve_tiers = Vec::new(&env);
+        curve_tiers.push_back(FeeTier {
+            min_amount: 1000,
+            fee_bps: 25,
+        });
+        curve_tiers.push_back(FeeTier {
+            min_amount: 5000,
+            fee_bps: 15,
+        });
+        client.set_route_fee_tiers(&admin, &curve, &curve_tiers);
+
         let all_configured_routes = client.get_all_configured_routes();
-        assert_eq!(all_configured_routes.len(), 4);
+        assert_eq!(all_configured_routes.len(), 5);
         assert_eq!(
             all_configured_routes.get(0).unwrap().0,
             String::from_str(&env, "uniswap")
@@ -1384,6 +1505,11 @@ mod tests {
             String::from_str(&env, "aerodrome")
         );
         assert_eq!(all_configured_routes.get(3).unwrap().1, 50);
+        assert_eq!(
+            all_configured_routes.get(4).unwrap().0,
+            String::from_str(&env, "curve")
+        );
+        assert_eq!(all_configured_routes.get(4).unwrap().1, 25);
     }
 
     #[test]
@@ -1553,5 +1679,28 @@ mod tests {
         let existing = String::from_str(&env, "route-0");
         client.set_route_fee(&admin, &existing, &20);
         assert_eq!(client.get_route_fee(&existing), 20);
+    }
+
+    #[test]
+    fn test_set_route_fee_tiers_rejects_route_beyond_max_tracked_routes() {
+        let (env, admin, client) = setup();
+        env.budget().reset_unlimited();
+
+        let tiers = vec![
+            &env,
+            FeeTier {
+                min_amount: 0,
+                fee_bps: 10,
+            },
+        ];
+
+        for i in 0..MAX_TRACKED_ROUTES {
+            let route = String::from_str(&env, &format!("route-{}", i));
+            client.set_route_fee_tiers(&admin, &route, &tiers);
+        }
+
+        let one_too_many = String::from_str(&env, "one-too-many");
+        let result = client.try_set_route_fee_tiers(&admin, &one_too_many, &tiers);
+        assert_eq!(result, Err(Ok(QuoteError::TooManyRoutes)));
     }
 }

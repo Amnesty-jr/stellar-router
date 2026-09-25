@@ -131,6 +131,22 @@ pub struct RouterTimelock;
 
 #[contractimpl]
 impl RouterTimelock {
+    /// Maximum depth at which `check_dependency_depth` will recurse into
+    /// ancestor operations.
+    ///
+    /// Because `check_dependency_depth` is first invoked with `depth = 0` for
+    /// each *direct* dependency passed to `queue()`, a value of `N` here
+    /// permits an ancestor chain of **`N + 1` nodes** before the call is
+    /// rejected.  In other words:
+    ///
+    /// - A 9-node ancestor chain reaches depth 8 at its deepest point →
+    ///   **allowed** (8 == `MAX_DEPENDENCY_DEPTH`).
+    /// - A 10-node ancestor chain reaches depth 9 →
+    ///   **rejected** (9 > `MAX_DEPENDENCY_DEPTH`).
+    ///
+    /// If you need to change this limit, remember that the effective maximum
+    /// permitted chain length is `MAX_DEPENDENCY_DEPTH + 1`, not
+    /// `MAX_DEPENDENCY_DEPTH`.
     const MAX_DEPENDENCY_DEPTH: u32 = 8;
 
     /// Maximum allowed `grace_period_seconds` when queueing an operation.
@@ -145,7 +161,12 @@ impl RouterTimelock {
     /// operation closer to its intended execution time.
     const MAX_GRACE_PERIOD_SECONDS: u64 = 30 * 24 * 60 * 60; // 30 days
 
+    /// Minimum remaining TTL (in ledgers) before instance storage is extended.
+    /// ~30 days at 5 s/ledger.
     const INSTANCE_TTL_THRESHOLD: u32 = 17280 * 30;
+
+    /// Target TTL (in ledgers) applied to instance storage on every entry point.
+    /// ~60 days at 5 s/ledger.
     const INSTANCE_TTL_EXTEND_TO: u32 = 17280 * 60;
 
     /// Initialize with an admin, minimum delay (seconds), and maximum pending operations limit.
@@ -591,6 +612,7 @@ impl RouterTimelock {
     /// * `Cancelled` — if the operation was cancelled.
     /// * `Executed`  — if the operation was executed.
     /// * `Expired`   — if `now > eta + grace_period_seconds` (and not executed/cancelled).
+    /// * `Blocked`   — if a direct dependency was cancelled (and not expired/executed/cancelled).
     /// * `Ready`     — if `now >= eta` and still within the grace period.
     /// * `Queued`    — if `now < eta`.
     ///
