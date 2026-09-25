@@ -82,7 +82,7 @@ pub enum RegistryError {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-/// Maximum byte length of a semver constraint string accepted by
+/// Maximum byte length of a version constraint string accepted by
 /// [`RouterRegistry::get_latest_with_constraint`].
 ///
 /// `constraint_str_buf` copies the constraint into a fixed-size stack buffer
@@ -107,6 +107,23 @@ const INSTANCE_TTL_EXTEND_TO: u32 = 17280 * 60;
 /// than admin-configurable, since (unlike multicall's arbitrary cross-contract
 /// calls) a registry batch item's cost is uniform and predictable.
 const MAX_BULK_BATCH_SIZE: u32 = 50;
+
+/// Operator prefix of a parsed version constraint string.
+///
+/// Constraint strings describe a single flat `u32` version, not a
+/// `major.minor.patch` triple, so `Caret` and `Tilde` reduce to an exact match
+/// on the numeric value (`version == X`). They are kept as distinct variants
+/// only to preserve the accepted input grammar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConstraintOperator {
+    Gte,
+    Lte,
+    Gt,
+    Lt,
+    Caret,
+    Tilde,
+    Exact,
+}
 
 // ── Contract ──────────────────────────────────────────────────────────────────
 
@@ -406,15 +423,18 @@ impl RouterRegistry {
         Self::latest_non_deprecated(&env, &name, &versions)
     }
 
-    /// Get the latest non-deprecated entry matching a semver constraint.
+    /// Get the latest non-deprecated entry matching a version constraint.
     ///
-    /// Accepts an optional semver constraint string (e.g., ">=2.0,<3.0" or "^1.5").
+    /// Accepts an optional version constraint string (e.g., ">=2", "<=5",
+    /// "^3", "~3", or a bare version number "3"). Versions are flat integers
+    /// (`u32`), not `major.minor.patch` triples, so the caret (`^X`) and
+    /// tilde (`~X`) operators are equivalent to an exact match on `X`.
     /// Returns the highest non-deprecated version satisfying the constraint.
     ///
     /// # Arguments
     /// * `env` - The Soroban environment.
     /// * `name` - The human-readable name of the contract.
-    /// * `constraint` - Optional semver constraint (e.g., ">=2.0,<3.0").
+    /// * `constraint` - Optional version constraint (e.g., ">=2").
     ///
     /// # Returns
     /// The most recent non-deprecated [`ContractEntry`] matching the constraint.
@@ -492,7 +512,24 @@ impl RouterRegistry {
 
     /// Deprecate all registered versions of `name`.
     ///
-    /// Already-deprecated versions are skipped rather than aborting the whole call.
+    /// Already-deprecated versions are skipped rather than aborting the whole
+    /// call. The same optional `reason` is applied uniformly to every version
+    /// of `name` that gets deprecated.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `caller` - The address initiating the call; must be the admin.
+    /// * `name` - The human-readable name of the contract.
+    /// * `reason` - Optional human-readable reason for the deprecation, applied
+    ///   to every version of `name`.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// * [`RegistryError::Unauthorized`] — if `caller` is not the admin.
+    /// * [`RegistryError::NotFound`] — if `name` has never been registered.
+    /// * [`RegistryError::NotInitialized`] — if the contract has not been initialized.
     pub fn deprecate_all_versions(
         env: Env,
         caller: Address,
@@ -530,13 +567,13 @@ impl RouterRegistry {
         }
 
         entry.deprecated = true;
-        entry.deprecation_reason = reason;
+        entry.deprecation_reason = reason.clone();
         env.storage()
             .instance()
             .set(&DataKey::Entry(name.clone(), version), &entry);
         env.events().publish(
             (Symbol::new(env, router_common::EVENT_CONTRACT_DEPRECATED),),
-            (name, version),
+            (name, version, reason),
         );
         Ok(())
     }
@@ -775,6 +812,9 @@ impl RouterRegistry {
             RegistryError::InvalidHealthFn => router_common::BatchItemError::Custom(
                 soroban_sdk::String::from_str(env, "InvalidHealthFn"),
             ),
+            RegistryError::BatchTooLarge => router_common::BatchItemError::Custom(
+                soroban_sdk::String::from_str(env, "BatchTooLarge"),
+            ),
         }
     }
 
@@ -968,84 +1008,78 @@ impl RouterRegistry {
     fn validate_constraint(constraint: &String) -> Result<(), RegistryError> {
         let (buf, len) = Self::constraint_str_buf(constraint)?;
         let s = core::str::from_utf8(&buf[..len]).map_err(|_| RegistryError::InvalidConstraint)?;
-        let num_part = if s.starts_with(">=") || s.starts_with("<=") {
-            &s[2..]
-        } else if s.starts_with('>')
-            || s.starts_with('<')
-            || s.starts_with('^')
-            || s.starts_with('~')
-        {
-            &s[1..]
-        } else {
-            s
-        };
+        Self::parse_constraint(s).map(|_| ())
+    }
 
-        if num_part.is_empty() || num_part.parse::<u32>().is_err() {
-            return Err(RegistryError::InvalidConstraint);
-        }
-        Ok(())
+    /// Parse a constraint string into its operator prefix and numeric value.
+    ///
+    /// This is the single source of truth for the constraint grammar
+    /// (`>=X`, `<=X`, `>X`, `<X`, `^X`, `~X`, or an exact version `X`),
+    /// shared by [`validate_constraint`](Self::validate_constraint) and
+    /// [`version_matches_constraint`](Self::version_matches_constraint) so a
+    /// grammar change only needs to be made in one place.
+    fn parse_constraint(s: &str) -> Result<(ConstraintOperator, u32), RegistryError> {
+        let (op, num_part) = if let Some(rest) = s.strip_prefix(">=") {
+            (ConstraintOperator::Gte, rest)
+        } else if let Some(rest) = s.strip_prefix("<=") {
+            (ConstraintOperator::Lte, rest)
+        } else if let Some(rest) = s.strip_prefix('>') {
+            (ConstraintOperator::Gt, rest)
+        } else if let Some(rest) = s.strip_prefix('<') {
+            (ConstraintOperator::Lt, rest)
+        } else if let Some(rest) = s.strip_prefix('^') {
+            (ConstraintOperator::Caret, rest)
+        } else if let Some(rest) = s.strip_prefix('~') {
+            (ConstraintOperator::Tilde, rest)
+        } else {
+            (ConstraintOperator::Exact, s)
+        };
+        let value = num_part
+            .parse::<u32>()
+            .map_err(|_| RegistryError::InvalidConstraint)?;
+        Ok((op, value))
     }
 
     fn version_matches_constraint(
         version: u32,
         constraint: &String,
     ) -> Result<bool, RegistryError> {
-        // Parse simple semver constraints: >=X, <=X, >X, <X, ^X, ~X
         let (buf, len) = Self::constraint_str_buf(constraint)?;
         let constraint_str =
             core::str::from_utf8(&buf[..len]).map_err(|_| RegistryError::InvalidConstraint)?;
-
-        if let Some(rest) = constraint_str.strip_prefix(">=") {
-            let min = rest
-                .parse::<u32>()
-                .map_err(|_| RegistryError::InvalidConstraint)?;
-            Ok(version >= min)
-        } else if let Some(rest) = constraint_str.strip_prefix("<=") {
-            let max = rest
-                .parse::<u32>()
-                .map_err(|_| RegistryError::InvalidConstraint)?;
-            Ok(version <= max)
-        } else if let Some(rest) = constraint_str.strip_prefix(">") {
-            let min = rest
-                .parse::<u32>()
-                .map_err(|_| RegistryError::InvalidConstraint)?;
-            Ok(version > min)
-        } else if let Some(rest) = constraint_str.strip_prefix("<") {
-            let max = rest
-                .parse::<u32>()
-                .map_err(|_| RegistryError::InvalidConstraint)?;
-            Ok(version < max)
-        } else if let Some(rest) = constraint_str.strip_prefix("^") {
-            // Caret: allows changes that do not modify the left-most non-zero digit.
-            // Guard the upper bound so `u32::MAX` does not overflow when we form the
-            // exclusive upper bound for the range check.
-            let base = rest
-                .parse::<u32>()
-                .map_err(|_| RegistryError::InvalidConstraint)?;
-            if base == 0 {
-                Ok(version >= base && version < 1)
-            } else if base == u32::MAX {
-                Ok(version == u32::MAX)
-            } else {
-                Ok(version >= base && version < base + 1)
+        let (op, base) = Self::parse_constraint(constraint_str)?;
+        Ok(match op {
+            ConstraintOperator::Gte => version >= base,
+            ConstraintOperator::Lte => version <= base,
+            ConstraintOperator::Gt => version > base,
+            ConstraintOperator::Lt => version < base,
+            ConstraintOperator::Caret => {
+                // Versions are flat integers, so `^X` reduces to
+                // `version >= X && version < X + 1`, which for integers only
+                // ever matches `version == X` — equivalent to exact match.
+                // Guard the increment so `base == u32::MAX` cannot overflow
+                // when forming the exclusive upper bound.
+                if base == 0 {
+                    version >= base && version < 1
+                } else if base == u32::MAX {
+                    version == u32::MAX
+                } else {
+                    version >= base && version < base + 1
+                }
             }
-        } else if let Some(rest) = constraint_str.strip_prefix("~") {
-            // Tilde: allows patch-level changes.
-            let base = rest
-                .parse::<u32>()
-                .map_err(|_| RegistryError::InvalidConstraint)?;
-            if base == u32::MAX {
-                Ok(version == u32::MAX)
-            } else {
-                Ok(version >= base && version < base + 1)
+            ConstraintOperator::Tilde => {
+                // As with caret, `~X` would mean patch-level changes in a
+                // `major.minor.patch` scheme, but versions are flat integers
+                // here, so it is likewise equivalent to an exact match on `X`.
+                // Guard the increment so `base == u32::MAX` cannot overflow.
+                if base == u32::MAX {
+                    version == u32::MAX
+                } else {
+                    version >= base && version < base + 1
+                }
             }
-        } else {
-            // Try exact match
-            let exact = constraint_str
-                .parse::<u32>()
-                .map_err(|_| RegistryError::InvalidConstraint)?;
-            Ok(version == exact)
-        }
+            ConstraintOperator::Exact => version == base,
+        })
     }
 }
 
@@ -1290,9 +1324,10 @@ mod tests {
                 Symbol::new(&env, "contract_deprecated").into_val(&env)
             ]
         );
-        let (n, v): (String, u32) = event.2.into_val(&env);
+        let (n, v, r): (String, u32, Option<String>) = event.2.into_val(&env);
         assert_eq!(n, name);
         assert_eq!(v, 1u32);
+        assert_eq!(r, None);
     }
 
     #[test]
@@ -1926,9 +1961,10 @@ mod tests {
         assert_eq!(entry.deprecation_reason, Some(reason.clone()));
 
         let event = env.events().all().last().unwrap().clone();
-        let (n, v): (String, u32) = event.2.into_val(&env);
+        let (n, v, r): (String, u32, Option<String>) = event.2.into_val(&env);
         assert_eq!(n, name);
         assert_eq!(v, 1u32);
+        assert_eq!(r, Some(reason));
     }
 
     #[test]

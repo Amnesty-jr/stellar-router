@@ -73,7 +73,7 @@ and `get_latest` always returns the newest non-deprecated entry.
 - `register(caller, name, address, version)` — add a new versioned entry.
 - `get(name, version) → ContractEntry` — fetch a specific version.
 - `get_latest(name) → ContractEntry` — fetch the newest non-deprecated version.
-- `get_latest_with_constraint(name, constraint)` — fetch with a semver-style constraint (e.g. `>=2`, `<3`).
+- `get_latest_with_constraint(name, constraint)` — fetch with a version constraint (e.g. `>=2`, `<3`).
 - `deprecate(caller, name, version, reason)` — mark a version deprecated with an optional reason.
 - `deprecate_many(caller, entries)` — batch deprecation.
 
