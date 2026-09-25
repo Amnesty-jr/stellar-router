@@ -3,12 +3,11 @@
 //! # router-quote
 //!
 //! Quote calculation and route comparison for the stellar-router suite.
-//! Provides configurable fee-based quote calculations and best-route selection
-//! with support for multi-hop routes across fee tiers.
+//! Provides configurable fee-based quote calculations and best-route selection.
 //!
 //! ## Features
 //! - Configurable fee basis points (fee_bps) per route
-//! - Multi-hop route support with per-hop fee tier configuration
+//! - Per-route tiered fee schedules (FeeTier) selected by input amount
 //! - Multiple quote comparison
 //! - Best quote selection based on highest output amount
 
@@ -132,6 +131,14 @@ const MAX_TRACKED_ROUTES: u32 = 500;
 /// limit is reached to prevent unbounded storage growth and O(n²) insertion-sort overhead.
 const MAX_FEE_TIERS_PER_ROUTE: u32 = 100;
 
+/// Minimum remaining TTL (in ledgers) before instance storage is extended.
+/// ~30 days at 5 s/ledger.
+const INSTANCE_TTL_THRESHOLD: u32 = 17280 * 30;
+
+/// Target TTL (in ledgers) applied to instance storage on every entry point.
+/// ~60 days at 5 s/ledger.
+const INSTANCE_TTL_EXTEND_TO: u32 = 17280 * 60;
+
 #[contract]
 pub struct RouterQuote;
 
@@ -166,6 +173,7 @@ impl RouterQuote {
     /// * [`QuoteError::AlreadyInitialized`] — if already initialized.
     /// * [`QuoteError::InvalidFeeBps`] — if fee_bps > 10000.
     pub fn initialize(env: Env, admin: Address, default_fee_bps: u32) -> Result<(), QuoteError> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(QuoteError::AlreadyInitialized);
         }
@@ -211,6 +219,7 @@ impl RouterQuote {
         fee_bps: u32,
     ) -> Result<(), QuoteError> {
         caller.require_auth();
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         router_common::require_admin_simple!(&env, &caller, &DataKey::Admin, QuoteError)?;
 
         if fee_bps > BPS_DENOMINATOR {
@@ -249,6 +258,7 @@ impl RouterQuote {
     /// * [`QuoteError::Unauthorized`] — if caller is not the admin.
     pub fn unset_route_fee(env: Env, caller: Address, route: String) -> Result<(), QuoteError> {
         caller.require_auth();
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         router_common::require_admin_simple!(&env, &caller, &DataKey::Admin, QuoteError)?;
 
         env.storage()
@@ -297,6 +307,7 @@ impl RouterQuote {
         tiers: Vec<FeeTier>,
     ) -> Result<(), QuoteError> {
         caller.require_auth();
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         router_common::require_admin_simple!(&env, &caller, &DataKey::Admin, QuoteError)?;
 
         // Validate tier count to prevent unbounded storage growth
@@ -347,6 +358,7 @@ impl RouterQuote {
     /// # Errors
     /// * [`QuoteError::NotInitialized`] — if the contract has not been initialized.
     pub fn get_route_fee(env: Env, route: String) -> Result<u32, QuoteError> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         match env
             .storage()
             .instance()
@@ -362,6 +374,7 @@ impl RouterQuote {
     /// Returns an error if the contract has not been initialized.
     /// If the route has no configured tiers, returns an empty vector.
     pub fn get_route_fee_tiers(env: Env, route: String) -> Result<Vec<FeeTier>, QuoteError> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         // Verify contract is initialized by checking Admin key exists
         env.storage()
             .instance()
@@ -375,23 +388,24 @@ impl RouterQuote {
             .ok_or(QuoteError::NotInitialized)
     }
 
-    /// Get all configured router fee.
+    /// Get all configured routes and their effective fees.
     ///
-    /// Returns a vector of route_name and fee_bps.
+    /// Returns a vector of (route_name, fee_bps) pairs.
     ///
     /// # Arguments
     /// * `env` - The Soroban environment.
     ///
     /// # Returns
-    /// Router name and Fee in basis points.
+    /// A vector of (route_name, fee_bps) pairs.
     pub fn get_all_configured_routes(env: Env) -> Vec<(String, u32)> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         let routes = Self::read_configured_routes(&env);
         let mut configured_routes = Vec::new(&env);
 
         for route in routes {
             let tiers = match Self::get_route_fee_tiers(env.clone(), route.clone()) {
                 Ok(t) => t,
-                Err(_) => Vec::new(&env), // If not initialized, skip this route
+                Err(_) => Vec::new(&env), // Treat an uninitialized/errored tier lookup as "no tiers"; the route is only skipped below if the flat-fee fallback also fails
             };
             let fee = if let Some(lowest) = tiers.get(0) {
                 lowest.fee_bps
@@ -587,6 +601,7 @@ impl RouterQuote {
     /// * [`QuoteError::InvalidFeeBps`] — if fee_bps > 10000.
     pub fn set_default_fee(env: Env, caller: Address, fee_bps: u32) -> Result<(), QuoteError> {
         caller.require_auth();
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         router_common::require_admin_simple!(&env, &caller, &DataKey::Admin, QuoteError)?;
 
         if fee_bps > BPS_DENOMINATOR {
@@ -619,6 +634,7 @@ impl RouterQuote {
     /// # Errors
     /// * [`QuoteError::NotInitialized`] — if the contract has not been initialized.
     pub fn get_default_fee(env: Env) -> Result<u32, QuoteError> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         env.storage()
             .instance()
             .get(&DataKey::DefaultFee)
@@ -636,6 +652,7 @@ impl RouterQuote {
     /// # Errors
     /// * [`QuoteError::NotInitialized`] — if the contract has not been initialized.
     pub fn admin(env: Env) -> Result<Address, QuoteError> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         env.storage()
             .instance()
             .get(&DataKey::Admin)
@@ -660,6 +677,7 @@ impl RouterQuote {
         new_admin: Address,
     ) -> Result<(), QuoteError> {
         current.require_auth();
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         router_common::require_admin_simple!(&env, &current, &DataKey::Admin, QuoteError)?;
         env.storage().instance().set(&DataKey::Admin, &new_admin);
 
@@ -705,6 +723,8 @@ impl RouterQuote {
             for tier in tiers.iter() {
                 if amount_in >= tier.min_amount {
                     matching_fee = Some(tier.fee_bps);
+                } else {
+                    break;
                 }
             }
             if let Some(fee) = matching_fee {
