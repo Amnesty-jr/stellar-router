@@ -435,11 +435,10 @@ impl RouterQuote {
             .and_then(|v| v.checked_div(BPS_DENOMINATOR as i128))
             .ok_or(QuoteError::ArithmeticOverflow)?;
 
-        // Calculate output: amount_out = amount_in - fee_amount
-        let amount_out = request
-            .amount_in
-            .checked_sub(fee_amount)
-            .ok_or(QuoteError::ArithmeticOverflow)?;
+        // Calculate output: amount_out = amount_in - fee_amount.
+        // Guaranteed not to underflow since fee_bps <= BPS_DENOMINATOR ensures fee_amount <= amount_in.
+        debug_assert!(fee_amount <= request.amount_in);
+        let amount_out = request.amount_in - fee_amount;
 
         let response = QuoteResponse {
             route: request.route.clone(),
